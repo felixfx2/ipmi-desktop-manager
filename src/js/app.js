@@ -44,6 +44,7 @@ const App = {
   },
 
   init() {
+    console.log('[IDM] init() called, Tauri available:', !!window.__TAURI_INTERNALS__);
     this.applyTheme();
     this.renderSidebar();
     this.bindKeyboardShortcuts();
@@ -95,6 +96,7 @@ const App = {
   },
 
   navigate(pageId) {
+    console.log('[IDM] navigate called:', pageId);
     this.currentPage = pageId;
 
     document.querySelectorAll('.nav-item').forEach(el => {
@@ -105,6 +107,7 @@ const App = {
     document.getElementById('page-title').textContent = page?.label || '';
 
     this.renderPage(pageId);
+    console.log('[IDM] navigate done:', pageId);
   },
 
   renderPage(pageId) {
@@ -670,6 +673,7 @@ const App = {
   },
 
   renderSettings(body, actions) {
+    console.log('[IDM] renderSettings called, body:', !!body);
     body.innerHTML = `
       <div class="card">
         <div class="card-header">
@@ -724,6 +728,7 @@ const App = {
         </div>
       </div>
     `;
+    this.toast('Settings page loaded', 'info');
     this.loadSavedCredentials();
   },
 
