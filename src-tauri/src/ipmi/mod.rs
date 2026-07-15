@@ -134,6 +134,8 @@ impl IpmiClient {
         socket: &UdpSocket,
         session: &mut IpmiSession,
     ) -> IpmiResult<()> {
+        use std::time::Duration;
+
         let rand_a = {
             let mut rng = rand::thread_rng();
             let mut buf = vec![0u8; 16];
@@ -145,7 +147,10 @@ impl IpmiClient {
         socket.send(&m1).await?;
 
         let mut buf = vec![0u8; 1024];
-        let n = socket.recv(&mut buf).await?;
+        let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buf))
+            .await
+            .map_err(|_| IpmiError::Timeout)?
+            .map_err(IpmiError::Io)?;
         if n < 48 {
             return Err(IpmiError::Protocol("RAKP-M2 too short".into()));
         }
@@ -156,7 +161,10 @@ impl IpmiClient {
         let m3 = build_rakp_m3(session, &rand_a)?;
         socket.send(&m3).await?;
 
-        let n = socket.recv(&mut buf).await?;
+        let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buf))
+            .await
+            .map_err(|_| IpmiError::Timeout)?
+            .map_err(IpmiError::Io)?;
         if n < 28 {
             return Err(IpmiError::Protocol("RAKP-M4 too short".into()));
         }
@@ -248,9 +256,14 @@ impl IpmiClient {
         socket.send(&packet).await?;
 
         let mut buf = vec![0u8; 1024];
-        let n = match socket.recv(&mut buf).await {
-            Ok(n) => n,
-            Err(e) => {
+        let n = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            socket.recv(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut
                 {
@@ -258,6 +271,7 @@ impl IpmiClient {
                 }
                 return Err(IpmiError::Io(e));
             }
+            Err(_) => return Err(IpmiError::Timeout),
         };
 
         if n < 10 {
