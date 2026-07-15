@@ -1,5 +1,15 @@
-const { invoke } = window.__TAURI__?.core || window.__TAURI__?.tauri || { invoke: async () => {} };
-const { listen } = window.__TAURI__?.event || { listen: async () => () => {} };
+const { invoke: rawInvoke, transformCallback } = window.__TAURI_INTERNALS__ || {};
+
+async function invoke(cmd, args) {
+  if (!rawInvoke) throw new Error('Tauri IPC not available');
+  return rawInvoke(cmd, args);
+}
+
+async function listen(event, handler) {
+  if (!rawInvoke) return () => {};
+  const id = await rawInvoke('plugin:event|listen', { event, handler: transformCallback(handler) });
+  return () => rawInvoke('plugin:event|unlisten', { eventId: id });
+}
 
 const App = {
   currentPage: 'dashboard',
