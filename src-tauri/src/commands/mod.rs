@@ -91,7 +91,8 @@ pub async fn connect(state: tauri::State<'_, AppState>, params: ConnectionParams
 
     if use_ipmi {
         let mut client = state.ipmi_client.lock().await;
-        match client.connect(&params.host, params.port, &params.username, &params.password).await {
+        let ipmi_port = 623u16;
+        match client.connect(&params.host, ipmi_port, &params.username, &params.password).await {
             Ok(()) => {
                 any_connected = true;
                 log::info!("IPMI connection established");
