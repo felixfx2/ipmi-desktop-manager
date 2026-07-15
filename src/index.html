@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IPMI Desktop Manager</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo">IP</div>
+        <div class="sidebar-title">IPMI Manager</div>
+      </div>
+      <nav class="sidebar-nav" id="sidebar-nav"></nav>
+      <div class="sidebar-footer">
+        <div class="status-dot" id="status-dot"></div>
+        <span class="sidebar-status" id="status-text">Disconnected</span>
+      </div>
+    </aside>
+    <main class="main-content">
+      <header class="page-header">
+        <h1 class="page-title" id="page-title">Dashboard</h1>
+        <div class="page-actions" id="page-actions"></div>
+      </header>
+      <div class="page-body" id="page-body"></div>
+    </main>
+  </div>
+  <div class="toast-container" id="toast-container"></div>
+  <script src="js/app.js"></script>
+</body>
+</html>

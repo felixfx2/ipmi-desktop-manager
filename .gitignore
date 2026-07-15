@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Rust / Cargo build output
+src-tauri/target/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.local
+
+# Debug logs
+*.log
+
+# Compiled binaries (keep only installers in releases, not build artifacts)
+src-tauri/target/release/bundle/
+
+# Windows installer temp
+src-tauri/target/release/wix/

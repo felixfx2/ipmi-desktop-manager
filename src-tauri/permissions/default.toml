@@ -1,0 +1,155 @@
+[[permission]]
+identifier = "allow-connect"
+description = "Connect to BMC via Redfish/IPMI"
+commands.allow = ["connect"]
+
+[[permission]]
+identifier = "allow-disconnect"
+description = "Disconnect from BMC"
+commands.allow = ["disconnect"]
+
+[[permission]]
+identifier = "allow-get-connection-status"
+description = "Get current connection status"
+commands.allow = ["get_connection_status"]
+
+[[permission]]
+identifier = "allow-save-credentials"
+description = "Save credentials to keychain"
+commands.allow = ["save_credentials"]
+
+[[permission]]
+identifier = "allow-load-credentials"
+description = "Load credentials from keychain"
+commands.allow = ["load_credentials"]
+
+[[permission]]
+identifier = "allow-get-dashboard"
+description = "Get dashboard data"
+commands.allow = ["get_dashboard"]
+
+[[permission]]
+identifier = "allow-power-on"
+description = "Power on server"
+commands.allow = ["power_on"]
+
+[[permission]]
+identifier = "allow-power-off"
+description = "Power off server"
+commands.allow = ["power_off"]
+
+[[permission]]
+identifier = "allow-power-cycle"
+description = "Power cycle server"
+commands.allow = ["power_cycle"]
+
+[[permission]]
+identifier = "allow-graceful-shutdown"
+description = "Graceful shutdown server"
+commands.allow = ["graceful_shutdown"]
+
+[[permission]]
+identifier = "allow-force-off"
+description = "Force power off server"
+commands.allow = ["force_off"]
+
+[[permission]]
+identifier = "allow-hard-reset"
+description = "Hard reset server"
+commands.allow = ["hard_reset"]
+
+[[permission]]
+identifier = "allow-get-sensors"
+description = "Get sensor readings"
+commands.allow = ["get_sensors"]
+
+[[permission]]
+identifier = "allow-get-sel-entries"
+description = "Get SEL log entries"
+commands.allow = ["get_sel_entries"]
+
+[[permission]]
+identifier = "allow-clear-sel"
+description = "Clear SEL log"
+commands.allow = ["clear_sel"]
+
+[[permission]]
+identifier = "allow-get-fru-info"
+description = "Get FRU information"
+commands.allow = ["get_fru_info"]
+
+[[permission]]
+identifier = "allow-sol-activate"
+description = "Activate SOL session"
+commands.allow = ["sol_activate"]
+
+[[permission]]
+identifier = "allow-sol-deactivate"
+description = "Deactivate SOL session"
+commands.allow = ["sol_deactivate"]
+
+[[permission]]
+identifier = "allow-sol-send-input"
+description = "Send input to SOL session"
+commands.allow = ["sol_send_input"]
+
+[[permission]]
+identifier = "allow-mount-virtual-media"
+description = "Mount virtual media"
+commands.allow = ["mount_virtual_media"]
+
+[[permission]]
+identifier = "allow-unmount-virtual-media"
+description = "Unmount virtual media"
+commands.allow = ["unmount_virtual_media"]
+
+[[permission]]
+identifier = "allow-get-virtual-media-status"
+description = "Get virtual media status"
+commands.allow = ["get_virtual_media_status"]
+
+[[permission]]
+identifier = "allow-set-boot-device"
+description = "Set boot device"
+commands.allow = ["set_boot_device"]
+
+[[permission]]
+identifier = "allow-start-sol-output-stream"
+description = "Start SOL output streaming"
+commands.allow = ["start_sol_output_stream"]
+
+[[permission]]
+identifier = "allow-stop-sol-output-stream"
+description = "Stop SOL output streaming"
+commands.allow = ["stop_sol_output_stream"]
+
+[[permission]]
+identifier = "default"
+description = "Default permissions for IPMI Desktop Manager"
+permissions = [
+    "allow-connect",
+    "allow-disconnect",
+    "allow-get-connection-status",
+    "allow-save-credentials",
+    "allow-load-credentials",
+    "allow-get-dashboard",
+    "allow-power-on",
+    "allow-power-off",
+    "allow-power-cycle",
+    "allow-graceful-shutdown",
+    "allow-force-off",
+    "allow-hard-reset",
+    "allow-get-sensors",
+    "allow-get-sel-entries",
+    "allow-clear-sel",
+    "allow-get-fru-info",
+    "allow-sol-activate",
+    "allow-sol-deactivate",
+    "allow-sol-send-input",
+    "allow-mount-virtual-media",
+    "allow-unmount-virtual-media",
+    "allow-get-virtual-media-status",
+    "allow-set-boot-device",
+    "allow-start-sol-output-stream",
+    "allow-stop-sol-output-stream",
+]
