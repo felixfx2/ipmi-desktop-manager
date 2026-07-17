@@ -23,6 +23,7 @@ pub fn run() {
             commands::get_connection_status,
             commands::save_credentials,
             commands::load_credentials,
+            commands::delete_saved_credentials,
             commands::get_dashboard,
             commands::power_on,
             commands::power_off,

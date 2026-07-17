@@ -711,9 +711,16 @@ const App = {
             <span>Skip TLS certificate verification (for self-signed certs)</span>
           </label>
         </div>
+        <div class="form-group">
+          <label class="form-check">
+            <input type="checkbox" id="set-save-creds" checked />
+            <span>Save credentials to system keychain</span>
+          </label>
+        </div>
         <div style="display: flex; gap: 8px; margin-top: 16px;">
           <button class="btn btn-primary" onclick="App.doConnect()">Connect</button>
           <button class="btn btn-danger" onclick="App.doDisconnect()">Disconnect</button>
+          <button class="btn btn-outline" onclick="App.doDeleteSavedCredentials()">Clear Saved</button>
         </div>
       </div>
       <div class="card">
@@ -739,6 +746,7 @@ const App = {
         const setHost = document.getElementById('set-host');
         const setPort = document.getElementById('set-port');
         const setUsername = document.getElementById('set-username');
+        const setPassword = document.getElementById('set-password');
         const setProtocol = document.getElementById('set-protocol');
         const setSkipTls = document.getElementById('set-skip-tls');
         if (setHost) setHost.value = creds.host || '';
@@ -746,6 +754,7 @@ const App = {
         if (setUsername) setUsername.value = creds.username || '';
         if (setProtocol) setProtocol.value = creds.protocol_mode || 'Auto';
         if (setSkipTls) setSkipTls.checked = creds.skip_tls_verify || false;
+        if (setPassword) setPassword.focus();
       }
     } catch (e) {
       console.warn('Failed to load saved credentials:', e);
@@ -759,6 +768,7 @@ const App = {
     const password = document.getElementById('set-password')?.value;
     const protocol_mode = document.getElementById('set-protocol')?.value || 'Auto';
     const skip_tls_verify = document.getElementById('set-skip-tls')?.checked || false;
+    const save_credentials = document.getElementById('set-save-creds')?.checked || false;
 
     if (!host || !username) {
       this.toast('Host and username are required', 'warning');
@@ -766,7 +776,7 @@ const App = {
     }
 
     try {
-      await invoke('connect', { params: { host, port, username, password: password || '', protocol_mode, skip_tls_verify } });
+      await invoke('connect', { params: { host, port, username, password: password || '', protocol_mode, skip_tls_verify, save_credentials } });
       this.connected = true;
       this.updateConnectionStatus(true);
       this.toast('Connected to BMC', 'success');
@@ -783,6 +793,15 @@ const App = {
       this.toast('Disconnected', 'success');
     } catch (e) {
       this.toast('Disconnect failed: ' + e, 'error');
+    }
+  },
+
+  async doDeleteSavedCredentials() {
+    try {
+      await invoke('delete_saved_credentials');
+      this.toast('Saved credentials cleared', 'success');
+    } catch (e) {
+      this.toast('Failed to clear saved credentials: ' + e, 'error');
     }
   },
 

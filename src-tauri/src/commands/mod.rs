@@ -31,6 +31,7 @@ pub struct ConnectionParams {
     pub password: String,
     pub protocol_mode: String,
     pub skip_tls_verify: bool,
+    pub save_credentials: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -112,16 +113,18 @@ pub async fn connect(state: tauri::State<'_, AppState>, params: ConnectionParams
 
     *state.connected.lock().await = true;
 
-    let stored = StoredCredentials {
-        host: params.host,
-        port: params.port,
-        username: params.username,
-        protocol_mode: params.protocol_mode,
-        skip_tls_verify: params.skip_tls_verify,
-    };
+    if params.save_credentials {
+        let stored = StoredCredentials {
+            host: params.host,
+            port: params.port,
+            username: params.username,
+            protocol_mode: params.protocol_mode,
+            skip_tls_verify: params.skip_tls_verify,
+        };
 
-    if let Err(e) = keychain::save_credentials(&stored, &params.password) {
-        log::warn!("Failed to save credentials to keychain: {}", e);
+        if let Err(e) = keychain::save_credentials(&stored, &params.password) {
+            log::warn!("Failed to save credentials to keychain: {}", e);
+        }
     }
 
     Ok("Connected successfully".to_string())
@@ -164,6 +167,11 @@ pub async fn load_credentials() -> Result<Option<StoredCredentials>, String> {
     keychain::load_credentials()
         .map(|opt| opt.map(|(creds, _)| creds))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_saved_credentials() -> Result<(), String> {
+    keychain::delete_credentials().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

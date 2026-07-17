@@ -24,6 +24,11 @@ description = "Load credentials from keychain"
 commands.allow = ["load_credentials"]
 
 [[permission]]
+identifier = "allow-delete-saved-credentials"
+description = "Delete saved credentials from keychain"
+commands.allow = ["delete_saved_credentials"]
+
+[[permission]]
 identifier = "allow-get-dashboard"
 description = "Get dashboard data"
 commands.allow = ["get_dashboard"]
@@ -132,6 +137,7 @@ permissions = [
     "allow-get-connection-status",
     "allow-save-credentials",
     "allow-load-credentials",
+    "allow-delete-saved-credentials",
     "allow-get-dashboard",
     "allow-power-on",
     "allow-power-off",

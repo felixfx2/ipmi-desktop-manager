@@ -31,6 +31,10 @@
       "commands": { "allow": ["load_credentials"] }
     },
     {
+      "identifier": "allow-delete-saved-credentials",
+      "commands": { "allow": ["delete_saved_credentials"] }
+    },
+    {
       "identifier": "allow-get-dashboard",
       "commands": { "allow": ["get_dashboard"] }
     },

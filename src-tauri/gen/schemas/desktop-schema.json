@@ -399,6 +399,12 @@
           "markdownDescription": "Connect to BMC via Redfish/IPMI"
         },
         {
+          "description": "Delete saved credentials from keychain",
+          "type": "string",
+          "const": "allow-delete-saved-credentials",
+          "markdownDescription": "Delete saved credentials from keychain"
+        },
+        {
           "description": "Disconnect from BMC",
           "type": "string",
           "const": "allow-disconnect",
