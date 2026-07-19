@@ -9,6 +9,37 @@ use tokio::net::UdpSocket;
 
 pub mod sol;
 
+pub const IPMI_PORT: u16 = 623;
+
+const AUTH_NONE: u8 = 0x00;
+const AUTH_SHA1: u8 = 0x01;
+const AUTH_MD5: u8 = 0x02;
+const AUTH_SHA256: u8 = 0x03;
+
+const INTEG_NONE: u8 = 0x00;
+const INTEG_SHA1_96: u8 = 0x01;
+const INTEG_MD5_128: u8 = 0x02;
+const INTEG_MD5_LEGACY: u8 = 0x03;
+const INTEG_SHA256_128: u8 = 0x04;
+
+const CRYPT_NONE: u8 = 0x00;
+const CRYPT_AES_CBC_128: u8 = 0x01;
+
+const IPMI_AUTHCODE_BUFFER_SIZE: usize = 20;
+
+const RMCP_HEADER: [u8; 4] = [0xFF, 0x00, 0xFF, 0x07];
+
+const PAYLOAD_OPEN_SESSION_REQ: u8 = 0x10;
+const PAYLOAD_OPEN_SESSION_RSP: u8 = 0x11;
+const PAYLOAD_RAKP_M1: u8 = 0x12;
+const PAYLOAD_RAKP_M2: u8 = 0x13;
+const PAYLOAD_RAKP_M3: u8 = 0x14;
+const PAYLOAD_RAKP_M4: u8 = 0x15;
+
+type HmacMd5Type = Hmac<md5::Md5>;
+type HmacSha1Type = Hmac<Sha1>;
+type HmacSha256Type = Hmac<Sha256>;
+
 #[derive(Error, Debug)]
 pub enum IpmiError {
     #[error("IO error: {0}")]
@@ -27,120 +58,134 @@ pub enum IpmiError {
 
 pub type IpmiResult<T> = Result<T, IpmiError>;
 
-pub const IPMI_PORT: u16 = 623;
-
-/// RAKP auth algorithm identifiers (IPMI 2.0 spec Table 13-14)
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-enum AuthAlgo {
-    HmacMd5_128 = 0x01,
-    HmacMd5_256 = 0x02,
-    HmacSha1_128 = 0x03,
-    HmacSha1_256 = 0x04,
-    HmacSha256_128 = 0x05,
-    HmacSha256_256 = 0x06,
-}
-
-impl AuthAlgo {
-    fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0x01 => Some(Self::HmacMd5_128),
-            0x02 => Some(Self::HmacMd5_256),
-            0x03 => Some(Self::HmacSha1_128),
-            0x04 => Some(Self::HmacSha1_256),
-            0x05 => Some(Self::HmacSha256_128),
-            0x06 => Some(Self::HmacSha256_256),
-            _ => None,
-        }
-    }
-
-    fn output_len(&self) -> usize {
-        match self {
-            Self::HmacMd5_128 | Self::HmacMd5_256 => 16,
-            Self::HmacSha1_128 | Self::HmacSha1_256 => 20,
-            Self::HmacSha256_128 | Self::HmacSha256_256 => 32,
-        }
-    }
-
-    fn truncation_len(&self) -> usize {
-        match self {
-            Self::HmacMd5_128 | Self::HmacSha1_128 | Self::HmacSha256_128 => 16,
-            Self::HmacMd5_256 | Self::HmacSha1_256 | Self::HmacSha256_256 => 32,
-        }
-    }
-}
-
-/// Compute HMAC using the negotiated auth algorithm.
-/// Returns the full-length HMAC output.
-fn compute_hmac(algo: AuthAlgo, key: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
-    match algo {
-        AuthAlgo::HmacMd5_128 | AuthAlgo::HmacMd5_256 => {
-            let mut mac = Hmac::<md5::Md5>::new_from_slice(key)
+fn hmac_fn(auth: u8, key: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
+    match auth {
+        AUTH_MD5 => {
+            let mut m = HmacMd5Type::new_from_slice(key)
                 .map_err(|e| IpmiError::Protocol(format!("HMAC-MD5 key error: {}", e)))?;
-            mac.update(data);
-            Ok(mac.finalize().into_bytes().to_vec())
+            m.update(data);
+            Ok(m.finalize().into_bytes().to_vec())
         }
-        AuthAlgo::HmacSha1_128 | AuthAlgo::HmacSha1_256 => {
-            let mut mac = Hmac::<Sha1>::new_from_slice(key)
+        AUTH_SHA1 => {
+            let mut m = HmacSha1Type::new_from_slice(key)
                 .map_err(|e| IpmiError::Protocol(format!("HMAC-SHA1 key error: {}", e)))?;
-            mac.update(data);
-            Ok(mac.finalize().into_bytes().to_vec())
+            m.update(data);
+            Ok(m.finalize().into_bytes().to_vec())
         }
-        AuthAlgo::HmacSha256_128 | AuthAlgo::HmacSha256_256 => {
-            let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        AUTH_SHA256 => {
+            let mut m = HmacSha256Type::new_from_slice(key)
                 .map_err(|e| IpmiError::Protocol(format!("HMAC-SHA256 key error: {}", e)))?;
-            mac.update(data);
-            Ok(mac.finalize().into_bytes().to_vec())
+            m.update(data);
+            Ok(m.finalize().into_bytes().to_vec())
         }
+        _ => Err(IpmiError::Protocol(format!(
+            "Unknown auth algo: 0x{:02x}",
+            auth
+        ))),
     }
 }
 
-/// Truncate HMAC output to the truncation length for the algorithm
-fn trunc_hmac(algo: AuthAlgo, full_hmac: &[u8]) -> Vec<u8> {
-    full_hmac[..algo.truncation_len()].to_vec()
+fn hmac_digest_len(auth: u8) -> usize {
+    match auth {
+        AUTH_MD5 => 16,
+        AUTH_SHA1 => 20,
+        AUTH_SHA256 => 32,
+        _ => 0,
+    }
 }
 
-/// Derive SIK (Session Integrity Key) per IPMI 2.0 spec Section 22.16
+fn rakp_icv_len(auth: u8) -> usize {
+    hmac_digest_len(auth)
+}
+
+fn integrity_code_len(integ: u8) -> usize {
+    match integ {
+        INTEG_SHA1_96 => 12,
+        INTEG_MD5_128 | INTEG_MD5_LEGACY => 16,
+        INTEG_SHA256_128 => 16,
+        _ => 0,
+    }
+}
+
+fn pad_key(password: &[u8]) -> Vec<u8> {
+    let mut key = vec![0u8; IPMI_AUTHCODE_BUFFER_SIZE];
+    let len = password.len().min(IPMI_AUTHCODE_BUFFER_SIZE);
+    key[..len].copy_from_slice(&password[..len]);
+    key
+}
+
+fn checksum(data: &[u8]) -> u8 {
+    data.iter()
+        .fold(0u8, |a, &b| a.wrapping_add(b))
+        .wrapping_neg()
+}
+
+fn ipmi_pad(data: &[u8]) -> Vec<u8> {
+    let pad_len = 16 - (data.len() % 16);
+    let mut padded = data.to_vec();
+    // Pad with incrementing bytes 0x01, 0x02, 0x03, ... (NOT zeros)
+    // ipmitool lanplus_encrypt_payload: for (i = 0; i < pad_length; ++i) padded[i] = i + 1;
+    for i in 0..pad_len - 1 {
+        padded.push((i + 1) as u8);
+    }
+    padded.push((pad_len - 1) as u8);
+    padded
+}
+
+fn aes_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
+    use cipher::block_padding::NoPadding;
+    use cipher::{BlockEncryptMut, KeyIvInit};
+    type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+
+    let encryptor = Aes128CbcEnc::new_from_slices(key, iv)
+        .map_err(|e| IpmiError::Protocol(format!("Invalid key/IV: {}", e)))?;
+    let mut buf = data.to_vec();
+    let ct = encryptor
+        .encrypt_padded_mut::<NoPadding>(&mut buf, data.len())
+        .map_err(|e| IpmiError::Protocol(format!("Encryption padding error: {}", e)))?;
+    Ok(ct.to_vec())
+}
+
+pub fn cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
+    use cipher::block_padding::NoPadding;
+    use cipher::{BlockDecryptMut, KeyIvInit};
+    type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+
+    let decryptor = Aes128CbcDec::new_from_slices(key, iv)
+        .map_err(|e| IpmiError::Protocol(format!("Invalid key/IV: {}", e)))?;
+    let mut buf = data.to_vec();
+    decryptor
+        .decrypt_padded_mut::<NoPadding>(&mut buf)
+        .map_err(|e| IpmiError::Protocol(format!("Decryption failed: {}", e)))?;
+    Ok(buf)
+}
+
 fn derive_sik(
-    algo: AuthAlgo,
+    auth: u8,
     password: &[u8],
     random_a: &[u8],
     random_b: &[u8],
-    managed_sid: u32,
-    username: &[u8],
+    priv_level: u8,
+    username: &str,
 ) -> IpmiResult<Vec<u8>> {
+    let padded_key = pad_key(password);
     let mut input = Vec::new();
     input.extend_from_slice(random_a);
     input.extend_from_slice(random_b);
-    input.extend_from_slice(&managed_sid.to_le_bytes());
-    input.push(algo as u8);
+    input.push(priv_level);
     input.push(username.len() as u8);
-    input.extend_from_slice(username);
-
-    let full_hmac = compute_hmac(algo, password, &input)?;
-    Ok(full_hmac[..algo.truncation_len()].to_vec())
+    input.extend_from_slice(username.as_bytes());
+    hmac_fn(auth, &padded_key, &input)
 }
 
-/// Derive K1 (integrity key) from SIK per IPMI 2.0 spec
-fn derive_k1(algo: AuthAlgo, sik: &[u8]) -> IpmiResult<Vec<u8>> {
-    let mut input = Vec::new();
-    input.extend_from_slice(sik);
-    input.push(0x01);
-    input.extend(std::iter::repeat(0x00).take(20));
-
-    let full_hmac = compute_hmac(algo, sik, &input)?;
-    Ok(trunc_hmac(algo, &full_hmac))
+fn derive_k1(auth: u8, sik: &[u8]) -> IpmiResult<Vec<u8>> {
+    let const1 = vec![0x01u8; IPMI_AUTHCODE_BUFFER_SIZE];
+    hmac_fn(auth, sik, &const1)
 }
 
-/// Derive K2 (confidentiality key) from SIK per IPMI 2.0 spec
-fn derive_k2(algo: AuthAlgo, sik: &[u8]) -> IpmiResult<Vec<u8>> {
-    let mut input = Vec::new();
-    input.extend_from_slice(sik);
-    input.push(0x02);
-    input.extend(std::iter::repeat(0x00).take(20));
-
-    let full_hmac = compute_hmac(algo, sik, &input)?;
-    Ok(trunc_hmac(algo, &full_hmac))
+fn derive_k2(auth: u8, sik: &[u8]) -> IpmiResult<Vec<u8>> {
+    let const2 = vec![0x02u8; IPMI_AUTHCODE_BUFFER_SIZE];
+    hmac_fn(auth, sik, &const2)
 }
 
 #[derive(Debug, Clone)]
@@ -151,14 +196,18 @@ pub struct IpmiSession {
     pub password: Vec<u8>,
     pub managed_system_session_id: u32,
     pub initiator_session_id: u32,
-    pub auth_algo: AuthAlgo,
+    pub auth_algo: u8,
+    pub integ_algo: u8,
+    pub confid_algo: u8,
     pub seq_number: u32,
+    pub ipmi_seq: u8,
     pub sik: Vec<u8>,
     pub k1: Vec<u8>,
     pub k2: Vec<u8>,
     pub random_a: Vec<u8>,
     pub random_b: Vec<u8>,
-    pub rmcp_header: [u8; 4],
+    pub guid: Vec<u8>,
+    pub priv_level: u8,
 }
 
 impl IpmiSession {
@@ -171,14 +220,18 @@ impl IpmiSession {
             password: password.into_bytes(),
             managed_system_session_id: 0,
             initiator_session_id,
-            auth_algo: AuthAlgo::HmacSha1_128,
+            auth_algo: AUTH_SHA1,
+            integ_algo: INTEG_SHA1_96,
+            confid_algo: CRYPT_AES_CBC_128,
             seq_number: 0,
+            ipmi_seq: 0,
             sik: Vec::new(),
             k1: Vec::new(),
             k2: Vec::new(),
             random_a: Vec::new(),
             random_b: Vec::new(),
-            rmcp_header: [0x06, 0xff, 0x07, 0xca],
+            guid: Vec::new(),
+            priv_level: 0x04,
         }
     }
 
@@ -229,10 +282,7 @@ impl IpmiClient {
             password.to_string(),
         );
 
-        // Phase 1: Open Session Request/Response
         self.open_session_exchange(&socket, &mut session).await?;
-
-        // Phase 2: RAKP handshake
         self.rakp_exchange(&socket, &mut session).await?;
 
         self.socket = Some(Arc::new(socket));
@@ -249,7 +299,6 @@ impl IpmiClient {
         Ok(())
     }
 
-    /// Phase 1: Open Session Request (Message 1) / Response (Message 2)
     async fn open_session_exchange(
         &self,
         socket: &UdpSocket,
@@ -257,9 +306,14 @@ impl IpmiClient {
     ) -> IpmiResult<()> {
         use std::time::Duration;
 
-        let msg = build_open_session_request(session);
-        log::debug!("Open Session Request: {} bytes", msg.len());
-        socket.send(&msg).await?;
+        let pkt = build_open_session(
+            session.auth_algo,
+            session.integ_algo,
+            session.confid_algo,
+            session.initiator_session_id,
+        );
+        log::debug!("Open Session Request: {} bytes", pkt.len());
+        socket.send(&pkt).await?;
 
         let mut buf = vec![0u8; 1024];
         let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buf))
@@ -269,17 +323,26 @@ impl IpmiClient {
 
         log::debug!("Open Session Response: {} bytes", n);
 
-        if n < 28 {
-            return Err(IpmiError::Protocol(format!(
-                "Open Session Response too short: {} bytes",
-                n
-            )));
-        }
+        let (managed_sid, neg_auth, neg_integ, neg_confid) =
+            parse_open_session_response(&buf[..n])
+                .map_err(IpmiError::Protocol)?;
 
-        parse_open_session_response(&buf[0..n], session)
+        session.managed_system_session_id = managed_sid;
+        session.auth_algo = neg_auth;
+        session.integ_algo = neg_integ;
+        session.confid_algo = neg_confid;
+
+        log::info!(
+            "Open Session: sid=0x{:08x} auth=0x{:02x} integ=0x{:02x} confid=0x{:02x}",
+            managed_sid,
+            neg_auth,
+            neg_integ,
+            neg_confid
+        );
+
+        Ok(())
     }
 
-    /// Phase 2: RAKP-M1/M2/M3/M4 handshake
     async fn rakp_exchange(
         &self,
         socket: &UdpSocket,
@@ -287,19 +350,19 @@ impl IpmiClient {
     ) -> IpmiResult<()> {
         use std::time::Duration;
 
-        // Generate Random_A (16 bytes)
-        let rand_a: Vec<u8> = {
-            let mut rng = rand::thread_rng();
-            (0..16).map(|_| rng.gen()).collect()
-        };
-        session.random_a = rand_a.clone();
+        let mut random_a = vec![0u8; 16];
+        rand::thread_rng().fill(&mut random_a[..]);
+        session.random_a = random_a.clone();
 
-        // Send RAKP-M1 (Message 3)
-        let m1 = build_rakp_m1(&rand_a, session);
+        let m1 = build_rakp_m1(
+            &random_a,
+            session.managed_system_session_id,
+            &session.username,
+            session.priv_level,
+        );
         log::debug!("RAKP-M1: {} bytes", m1.len());
         socket.send(&m1).await?;
 
-        // Receive RAKP-M2 (Message 4)
         let mut buf = vec![0u8; 1024];
         let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buf))
             .await
@@ -308,22 +371,41 @@ impl IpmiClient {
 
         log::debug!("RAKP-M2: {} bytes", n);
 
-        if n < 48 {
-            return Err(IpmiError::Protocol(format!(
-                "RAKP-M2 too short: {} bytes",
-                n
-            )));
-        }
+        let (bmc_sid, random_b, guid) =
+            parse_rakp_m2(&buf[..n]).map_err(IpmiError::Protocol)?;
 
-        let m2 = &buf[0..n];
-        parse_rakp_m2(m2, session)?;
+        // NOTE: Do NOT overwrite managed_system_session_id here — it was correctly set
+        // by the Open Session Response. The RAKP-M2 echoed "console_id" field (bmc_sid)
+        // is the initiator's ID echoed back, NOT the managed system session ID.
+        session.random_b = random_b;
+        session.guid = guid;
 
-        // Send RAKP-M3 (Message 5)
-        let m3 = build_rakp_m3(session)?;
+        log::debug!("RAKP-M2: bmc_sid=0x{:08x}", bmc_sid);
+
+        let m3 = build_rakp_m3(
+            session.managed_system_session_id,
+            session.initiator_session_id,
+            &session.random_a,
+            &session.random_b,
+            &session.username,
+            &session.password,
+            session.auth_algo,
+            session.priv_level & 0x0F, // raw privilege (strip NameOnly bit)
+        );
         log::debug!("RAKP-M3: {} bytes", m3.len());
         socket.send(&m3).await?;
 
-        // Receive RAKP-M4 (Message 6)
+        let sik = derive_sik(
+            session.auth_algo,
+            &session.password,
+            &session.random_a,
+            &session.random_b,
+            session.priv_level & 0x0F, // raw privilege (strip NameOnly bit)
+            &session.username,
+        )?;
+        let k1 = derive_k1(session.auth_algo, &sik)?;
+        let k2 = derive_k2(session.auth_algo, &sik)?;
+
         let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buf))
             .await
             .map_err(|_| IpmiError::Timeout)?
@@ -331,20 +413,18 @@ impl IpmiClient {
 
         log::debug!("RAKP-M4: {} bytes", n);
 
-        if n < 28 {
-            return Err(IpmiError::Protocol(format!(
-                "RAKP-M4 too short: {} bytes",
-                n
-            )));
-        }
+        parse_rakp_m4(&buf[..n], session.auth_algo, session.integ_algo, &sik, &session.random_a, session.managed_system_session_id, &session.guid)
+            .map_err(IpmiError::Protocol)?;
 
-        let m4 = &buf[0..n];
-        parse_rakp_m4(m4, session)?;
+        session.sik = sik;
+        session.k1 = k1;
+        session.k2 = k2;
 
         log::info!(
-            "IPMI 2.0 session established: sid=0x{:08x}, algo={:?}",
-            session.managed_system_session_id,
-            session.auth_algo
+            "RAKP complete: sik={} bytes, k1={} bytes, k2={} bytes",
+            session.sik.len(),
+            session.k1.len(),
+            session.k2.len()
         );
 
         Ok(())
@@ -365,70 +445,109 @@ impl IpmiClient {
             .as_mut()
             .ok_or_else(|| IpmiError::Session("No session".into()))?;
 
+        let seq = session.seq_number;
+        let rqseq_lun: u8 = ((session.ipmi_seq & 0x3F) << 2) as u8;
         session.seq_number = session.seq_number.wrapping_add(1);
-
-        // Build the IPMI message (unencrypted part)
-        let sid = session.managed_system_session_id.to_le_bytes();
+        session.ipmi_seq = session.ipmi_seq.wrapping_add(1);
 
         let mut msg = Vec::new();
-        msg.push(0x20); // source addressing (remote console LUN 0)
-        msg.push(0x00); // netFn/LUN (App = 0x06 shifted, but here target)
-        msg.push(netfn);
-        let checksum: u8 = !(msg[0].wrapping_add(msg[1]).wrapping_add(msg[2]));
-        msg.push(checksum);
-        msg.extend_from_slice(&sid);
-        msg.push(0x00); // sequence / LUN
+        msg.push(0x20);                         // rs_addr (BMC = responder/target)
+        msg.push((netfn << 2) | 0x00);          // netfn | rs_lun
+        msg.push(checksum(&msg[0..2]));
+        msg.push(0x81);                         // rq_addr = IPMI_REMOTE_SWID (system software address, per ipmitool)
+        msg.push(rqseq_lun);                    // rq_seq | rq_lun
         msg.push(cmd);
         msg.extend_from_slice(data);
-        let mut msg_checksum: u8 = 0;
-        for b in msg.iter().skip(4) {
-            msg_checksum = msg_checksum.wrapping_add(*b);
-        }
-        msg_checksum = !msg_checksum;
-        msg.push(msg_checksum);
+        msg.push(checksum(&msg[3..]));
 
-        // Build RMCP+ session header
-        let session_auth_type = compute_session_auth_type(session);
-        let seq_bytes = session.seq_number.to_le_bytes();
+        let auth_type: u8 = 0x06; // ipmitool: "ipmi session Auth Type / Format is always 0x06 for IPMI v2"
+        // IPMI_MESSAGE (0x00) with auth/encryption flags per IPMI v2.0 spec:
+        // bit 7 = encrypted, bit 6 = authenticated
+        let mut payload_type: u8 = 0x00; // IPMI_MESSAGE base
+        if session.integ_algo != INTEG_NONE {
+            payload_type |= 0x40; // authenticated
+        }
+        if session.confid_algo != CRYPT_NONE {
+            payload_type |= 0x80; // encrypted
+        }
+        let session_id = session.managed_system_session_id;
 
         let mut packet = Vec::new();
-        packet.extend_from_slice(&session.rmcp_header);
-        packet.push(session_auth_type);
-        packet.extend_from_slice(&seq_bytes);
-        packet.extend_from_slice(&sid);
+        packet.extend_from_slice(&RMCP_HEADER);
+        packet.push(auth_type);
+        packet.push(payload_type);
+        packet.extend_from_slice(&session_id.to_le_bytes());
+        packet.extend_from_slice(&seq.to_le_bytes());
 
-        // For IPMI 2.0 with AES-CBC-128 confidentiality
-        if session_auth_type & 0xC0 == 0x40 {
-            // AES-CBC-128 confidentiality
+        if session.confid_algo == CRYPT_AES_CBC_128 {
+            // ipmitool lanplus_encrypt_payload: encrypts RAW IPMI message directly
+            // NO inner integrity — just pad the raw message and encrypt with K2
+            let padded = ipmi_pad(&msg);
+
             let iv: Vec<u8> = {
                 let mut rng = rand::thread_rng();
                 (0..16).map(|_| rng.gen()).collect()
             };
-            let padded_msg = pkcs7_pad(&msg, 16);
-            let encrypted = cbc_encrypt(&session.k2, &iv, &padded_msg)?;
-            let mut auth_data = Vec::new();
-            auth_data.extend_from_slice(&iv);
-            auth_data.extend_from_slice(&encrypted);
 
-            // Compute integrity HMAC
-            let mut auth_input = Vec::new();
-            auth_input.extend_from_slice(&packet); // RMCP+ header + session header
-            auth_input.extend_from_slice(&seq_bytes);
-            auth_input.extend_from_slice(&auth_data);
+            let aes_key = &session.k2[..16]; // truncate to 16 bytes for AES-128
+            let encrypted = aes_cbc_encrypt(aes_key, &iv, &padded)?;
 
-            let full_hmac = compute_hmac(session.auth_algo, &session.k1, &auth_input)?;
-            let auth_code = trunc_hmac(session.auth_algo, &full_hmac);
+            let msg_length: u16 = (16 + encrypted.len()) as u16;
 
-            packet.extend_from_slice(&auth_code);
-            packet.extend_from_slice(&seq_bytes);
-            packet.extend_from_slice(&auth_data);
+            // Outer integrity pad
+            let enc_total = 16 + encrypted.len();
+            let outer_pad_count = (4 - ((16 + enc_total + 2) % 4)) % 4;
+            let outer_pad_bytes = vec![0xFFu8; outer_pad_count];
+
+            let mut outer_input = Vec::new();
+            outer_input.push(auth_type);
+            outer_input.push(payload_type);
+            outer_input.extend_from_slice(&session_id.to_le_bytes());
+            outer_input.extend_from_slice(&seq.to_le_bytes());
+            outer_input.extend_from_slice(&msg_length.to_le_bytes());
+            outer_input.extend_from_slice(&iv);
+            outer_input.extend_from_slice(&encrypted);
+            outer_input.extend_from_slice(&outer_pad_bytes);
+            outer_input.push(outer_pad_count as u8); // pad_length
+            outer_input.push(0x07);                    // next_header = IPMI
+            let outer_integrity = hmac_fn(session.auth_algo, &session.k1, &outer_input)?;
+            let outer_trunc =
+                &outer_integrity[..integrity_code_len(session.integ_algo)];
+
+            packet.extend_from_slice(&msg_length.to_le_bytes());
+            packet.extend_from_slice(&iv);
+            packet.extend_from_slice(&encrypted);
+            packet.extend_from_slice(&outer_pad_bytes);
+            packet.push(outer_pad_count as u8);        // pad_length
+            packet.push(0x07);                          // next_header
+            packet.extend_from_slice(outer_trunc);
         } else {
-            packet.extend_from_slice(&seq_bytes);
-            packet.extend_from_slice(&msg);
-        }
+            let msg_length: u16 = msg.len() as u16;
 
-        let total_len = packet.len();
-        packet[5] = (total_len - 6) as u8;
+            // Integrity pad: align (header[14] + payload + pad + pad_length[1] + next_header[1]) to 4 bytes
+            let pad_count = (4 - ((14 + msg.len() + 2) % 4)) % 4;
+            let pad_bytes = vec![0xFFu8; pad_count];
+
+            let mut integrity_input = Vec::new();
+            integrity_input.push(auth_type);
+            integrity_input.push(payload_type);
+            integrity_input.extend_from_slice(&session_id.to_le_bytes());
+            integrity_input.extend_from_slice(&seq.to_le_bytes());
+            integrity_input.extend_from_slice(&msg_length.to_le_bytes());
+            integrity_input.extend_from_slice(&msg);
+            integrity_input.extend_from_slice(&pad_bytes);
+            integrity_input.push(pad_count as u8);   // pad_length
+            integrity_input.push(0x07);                // next_header = IPMI
+            let integrity = hmac_fn(session.auth_algo, &session.k1, &integrity_input)?;
+            let integrity_trunc = &integrity[..integrity_code_len(session.integ_algo)];
+
+            packet.extend_from_slice(&msg_length.to_le_bytes());
+            packet.extend_from_slice(&msg);
+            packet.extend_from_slice(&pad_bytes);
+            packet.push(pad_count as u8);              // pad_length
+            packet.push(0x07);                          // next_header
+            packet.extend_from_slice(integrity_trunc);
+        }
 
         socket.send(&packet).await?;
 
@@ -451,37 +570,114 @@ impl IpmiClient {
             Err(_) => return Err(IpmiError::Timeout),
         };
 
-        if n < 10 {
+        if n < 16 {
             return Err(IpmiError::InvalidResponse);
         }
 
-        // Parse response - for IPMI 2.0 with encryption, skip auth code + seq + encrypted data header
-        let response_data = if session_auth_type & 0xC0 == 0x40 && n > 22 {
-            // Skip: auth_code (trunc_len) + seq (4) + IV (16) = find msg data after decryption
-            // For now, approximate the response data start
-            let skip = session.auth_algo.truncation_len() + 4 + 16;
-            if skip < n {
-                &buf[skip..n - 1]
-            } else {
-                &[]
-            }
-        } else if n > 10 {
-            &buf[10..n - 1]
-        } else {
-            &[]
-        };
+        // payload_type (byte 5) carries encryption flags, NOT auth_type (byte 4)
+        let resp_payload_type = buf[5];
+        let resp_encrypted = (resp_payload_type & 0x80) != 0;
+        // Use negotiated integ_algo for auth code length (BMC should match our negotiation)
+        let auth_code_len = integrity_code_len(session.integ_algo);
 
-        if response_data.len() >= 2 {
-            let completion = response_data[response_data.len() - 2];
-            if completion != 0 {
-                return Err(IpmiError::Protocol(format!(
-                    "IPMI command returned completion code: 0x{:02x}",
-                    completion
-                )));
+        let _resp_session_id = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
+
+        if resp_encrypted {
+            if n < 28 {
+                return Err(IpmiError::Protocol("Encrypted response too short".into()));
             }
-            Ok(response_data[..response_data.len() - 1].to_vec())
+
+            let resp_msg_len =
+                u16::from_le_bytes([buf[14], buf[15]]) as usize;
+            let iv_start = 16;
+            let iv_end = iv_start + 16;
+            let enc_end = iv_end + resp_msg_len - 16;
+
+            if enc_end > n || iv_end > n {
+                return Err(IpmiError::Protocol("Encrypted response truncated".into()));
+            }
+
+            let iv = &buf[iv_start..iv_end];
+            let encrypted = &buf[iv_end..enc_end];
+            // Auth code is at end of packet (after pad+pad_length+next_header)
+            let outer_integrity = &buf[n - auth_code_len..n];
+
+            // HMAC covers everything before the auth code
+            let mut outer_input = Vec::new();
+            outer_input.extend_from_slice(&buf[4..n - auth_code_len]);
+            let expected_outer = hmac_fn(session.auth_algo, &session.k1, &outer_input)?;
+            let expected_outer_trunc = &expected_outer[..auth_code_len];
+
+            if outer_integrity != expected_outer_trunc {
+                return Err(IpmiError::AuthFailed(
+                    "Response outer integrity check failed".into(),
+                ));
+            }
+
+            let aes_key = &session.k2[..16]; // truncate to 16 bytes for AES-128
+            let decrypted = cbc_decrypt(aes_key, iv, encrypted)?;
+
+            // Remove padding: last byte = pad_length, preceding pad_length bytes are pad (0x01, 0x02...)
+            // ipmitool lanplus_decrypt_payload: conf_pad_length = decrypted[bytes_decrypted - 1]
+            // payload_size = bytes_decrypted - conf_pad_length - 1
+            let pad_len = *decrypted.last().unwrap_or(&0) as usize;
+            if pad_len == 0 || pad_len > decrypted.len() || pad_len > 16 {
+                return Err(IpmiError::Protocol("Invalid padding in response".into()));
+            }
+
+            // ipmitool: payload_size = bytes_decrypted - conf_pad_length - 1
+            let ipmi_response = &decrypted[..decrypted.len() - pad_len - 1];
+
+            if ipmi_response.len() >= 3 {
+                let completion = ipmi_response[ipmi_response.len() - 1];
+                if completion != 0 {
+                    return Err(IpmiError::Protocol(format!(
+                        "IPMI command returned completion code: 0x{:02x}",
+                        completion
+                    )));
+                }
+                Ok(ipmi_response[..ipmi_response.len() - 1].to_vec())
+            } else {
+                Ok(ipmi_response.to_vec())
+            }
         } else {
-            Ok(response_data.to_vec())
+            let resp_msg_len =
+                u16::from_le_bytes([buf[14], buf[15]]) as usize;
+            let data_start = 16;
+            let data_end = data_start + resp_msg_len;
+
+            if data_end > n || data_start > n {
+                return Err(IpmiError::Protocol("Response too short".into()));
+            }
+
+            let ipmi_response = &buf[data_start..data_end];
+            // Auth code is at end of packet (after pad+pad_length+next_header)
+            let resp_ic = &buf[n - auth_code_len..n];
+
+            // HMAC covers everything from byte 4 to auth code start
+            let mut verify_input = Vec::new();
+            verify_input.extend_from_slice(&buf[4..n - auth_code_len]);
+            let expected_ic = hmac_fn(session.auth_algo, &session.k1, &verify_input)?;
+            let expected_ic_trunc = &expected_ic[..auth_code_len];
+
+            if resp_ic != expected_ic_trunc {
+                return Err(IpmiError::AuthFailed(
+                    "Response integrity check failed".into(),
+                ));
+            }
+
+            if ipmi_response.len() >= 3 {
+                let completion = ipmi_response[ipmi_response.len() - 1];
+                if completion != 0 {
+                    return Err(IpmiError::Protocol(format!(
+                        "IPMI command returned completion code: 0x{:02x}",
+                        completion
+                    )));
+                }
+                Ok(ipmi_response[..ipmi_response.len() - 1].to_vec())
+            } else {
+                Ok(ipmi_response.to_vec())
+            }
         }
     }
 
@@ -495,433 +691,284 @@ impl IpmiClient {
     }
 }
 
-/// Compute session auth type byte for IPMI 2.0 session header
-/// Bits 7:6 = Confidentiality algo (01 = AES-CBC-128)
-/// Bits 2:0 = Integrity algo (matches RAKP auth algo for 128-bit variants)
-fn compute_session_auth_type(session: &IpmiSession) -> u8 {
-    let confidentiality = 0x01u8; // AES-CBC-128
-    let integrity = match session.auth_algo {
-        AuthAlgo::HmacMd5_128 | AuthAlgo::HmacMd5_256 => 0x01,
-        AuthAlgo::HmacSha1_128 | AuthAlgo::HmacSha1_256 => 0x03,
-        AuthAlgo::HmacSha256_128 | AuthAlgo::HmacSha256_256 => 0x05,
-    };
-    (confidentiality << 6) | (integrity & 0x07)
-}
+fn build_open_session(auth: u8, integ: u8, confid: u8, init_sid: u32) -> Vec<u8> {
+    let mut pkt = Vec::with_capacity(48);
 
-/// Build Open Session Request (IPMI 2.0 Message 1)
-fn build_open_session_request(session: &IpmiSession) -> Vec<u8> {
-    let mut pkt = Vec::new();
+    pkt.extend_from_slice(&RMCP_HEADER);
 
-    // RMCP header
-    pkt.extend_from_slice(&[0x06, 0xff, 0x07, 0xca]);
-
-    // Session header: auth=0x00, seq=0, sid=0
-    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-
-    // Message tag
-    pkt.push(0x00);
-
-    // Message type: 0x10 = Open Session Request
-    pkt.push(0x10);
-
-    // Message length (2 bytes LE) - data after this field
-    // Data: max_priv(1) + reserved(1) + init_session_id(4) + auth_algo(1) + integ_algo(1) + confid_algo(1) + reserved(4) = 13
-    let msg_len: u16 = 13;
-    pkt.extend_from_slice(&msg_len.to_le_bytes());
-
-    // Maximum privilege level: 0x04 = Administrator
-    pkt.push(0x04);
-
-    // Reserved
-    pkt.push(0x00);
-
-    // Initiator Session ID (4 bytes LE)
-    pkt.extend_from_slice(&session.initiator_session_id.to_le_bytes());
-
-    // Authentication algorithm: 0x05 = HMAC-SHA256-128
-    pkt.push(AuthAlgo::HmacSha256_128 as u8);
-
-    // Integrity algorithm: 0x05 = HMAC-SHA256-128
-    pkt.push(0x05);
-
-    // Confidentiality algorithm: 0x01 = AES-CBC-128
-    pkt.push(0x01);
-
-    // Reserved (4 bytes)
+    pkt.push(0x06);
+    pkt.push(PAYLOAD_OPEN_SESSION_REQ);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
 
-    // Checksum: ~(sum of bytes from byte 4 to last byte before checksum)
-    let checksum = compute_checksum(&pkt[4..]);
-    pkt.push(checksum);
+    let payload_len: u16 = 32;
+    pkt.extend_from_slice(&payload_len.to_le_bytes());
 
-    pkt
-}
-
-/// Parse Open Session Response (IPMI 2.0 Message 2)
-fn parse_open_session_response(pkt: &[u8], session: &mut IpmiSession) -> IpmiResult<()> {
-    // RMCP header: 4 bytes
-    // Session header: 9 bytes (auth=1 + seq=4 + sid=4)
-    // Message tag: 1 byte (offset 13)
-    // Message type: 1 byte (offset 14) = 0x11
-    // Message length: 2 bytes (offset 15-16)
-    // Status: 1 byte (offset 17)
-    // Max privilege: 1 byte (offset 18)
-    // Managed system session ID: 4 bytes (offset 19-22)
-    // Initiator session ID: 4 bytes (offset 23-26)
-    // Auth algo: 1 byte (offset 27)
-    // Integrity algo: 1 byte (offset 28)
-    // Confidentiality algo: 1 byte (offset 29)
-    // Reserved: 3 bytes (offset 30-32)
-    // Checksum: 1 byte (offset 33)
-
-    if pkt.len() < 34 {
-        return Err(IpmiError::Protocol("Open Session Response too short".into()));
-    }
-
-    // Verify message type = 0x11 (Open Session Response)
-    if pkt[14] != 0x11 {
-        return Err(IpmiError::Protocol(format!(
-            "Unexpected message type in Open Session Response: 0x{:02x}",
-            pkt[14]
-        )));
-    }
-
-    let status = pkt[17];
-    if status != 0x00 {
-        return Err(IpmiError::AuthFailed(format!(
-            "Open Session Response status: 0x{:02x}",
-            status
-        )));
-    }
-
-    // Managed system session ID (from message data, not session header)
-    session.managed_system_session_id = u32::from_le_bytes([pkt[19], pkt[20], pkt[21], pkt[22]]);
-
-    // Verify initiator session ID echo
-    let echo_init_sid = u32::from_le_bytes([pkt[23], pkt[24], pkt[25], pkt[26]]);
-    if echo_init_sid != session.initiator_session_id {
-        return Err(IpmiError::Protocol(format!(
-            "Initiator session ID mismatch: sent 0x{:08x}, got 0x{:08x}",
-            session.initiator_session_id, echo_init_sid
-        )));
-    }
-
-    // Read negotiated algorithms (from message data)
-    let auth_algo_val = pkt[27];
-    let _integ_algo_val = pkt[28];
-    let _confid_algo_val = pkt[29];
-
-    // Use the auth algorithm if the BMC negotiated a different one
-    if let Some(algo) = AuthAlgo::from_u8(auth_algo_val) {
-        session.auth_algo = algo;
-    } else {
-        log::warn!(
-            "Unknown auth algorithm 0x{:02x}, falling back to SHA256-128",
-            auth_algo_val
-        );
-        session.auth_algo = AuthAlgo::HmacSha256_128;
-    }
-
-    log::debug!(
-        "Open Session Response: sid=0x{:08x}, auth=0x{:02x}, integ=0x{:02x}, confid=0x{:02x}",
-        session.managed_system_session_id,
-        auth_algo_val,
-        _integ_algo_val,
-        _confid_algo_val
-    );
-
-    Ok(())
-}
-
-/// Build RAKP-M1 (IPMI 2.0 Message 3)
-fn build_rakp_m1(rand_a: &[u8], session: &IpmiSession) -> Vec<u8> {
-    let mut pkt = Vec::new();
-
-    // RMCP header
-    pkt.extend_from_slice(&[0x06, 0xff, 0x07, 0xca]);
-
-    // Session header: auth=0x00, seq=0, sid=managed_system_session_id
-    pkt.push(0x00); // Auth type = None
-    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Seq = 0
-    pkt.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-
-    // RAKP-M1 header
-    pkt.push(0x00); // Message tag
-    pkt.push(0x12); // Message type: RAKP-M1
-
-    // Message length (2 bytes LE)
-    // Data: auth_algo(1) + reserved(3) + random_a(16) + priv_level(1) + username_len(1) + username(N)
-    let msg_len: u16 = (4 + 16 + 1 + 1 + session.username.len()) as u16;
-    pkt.extend_from_slice(&msg_len.to_le_bytes());
-
-    // Reserved
+    pkt.push(0x00);
+    pkt.push(0x04);
+    pkt.push(0x00);
     pkt.push(0x00);
 
-    // Authentication algorithm
-    pkt.push(session.auth_algo as u8);
+    pkt.extend_from_slice(&init_sid.to_le_bytes());
 
-    // Reserved (3 bytes)
-    pkt.extend_from_slice(&[0x00, 0x00, 0x00]);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x08);
+    pkt.push(auth);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
 
-    // Random_A (16 bytes)
-    pkt.extend_from_slice(rand_a);
+    pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x08);
+    pkt.push(integ);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
 
-    // Managed system privilege level: 0x04 = Administrator
-    pkt.push(0x04);
-
-    // Username length
-    pkt.push(session.username.len() as u8);
-
-    // Username
-    pkt.extend_from_slice(session.username.as_bytes());
-
-    // Checksum: ~(sum of bytes from RMCP header payload onwards)
-    let checksum = compute_checksum(&pkt[4..]);
-    pkt.push(checksum);
+    pkt.push(0x02);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x08);
+    pkt.push(confid);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
 
     pkt
 }
 
-/// Parse RAKP-M2 (IPMI 2.0 Message 4)
-fn parse_rakp_m2(m2: &[u8], session: &mut IpmiSession) -> IpmiResult<()> {
-    // RMCP header: 4 bytes (0-3)
-    // Session header: 9 bytes (4-12): auth(1) + seq(4) + sid(4)
-    // Message tag: 1 byte (13)
-    // Message type: 1 byte (14) = 0x13 (RAKP-M2)
-    // Message length: 2 bytes (15-16)
-    // Status: 1 byte (17)
-    // Managed system session ID: 4 bytes (18-21)
-    // Random_B: 16 bytes (22-37)
-    // GUID: 16 bytes (38-53)
-    // Username: variable (54+)
-    // Checksum: 1 byte (last)
-
-    if m2.len() < 54 {
-        return Err(IpmiError::Protocol(format!(
-            "RAKP-M2 too short: {} bytes (need at least 54)",
-            m2.len()
-        )));
+fn parse_open_session_response(pkt: &[u8]) -> Result<(u32, u8, u8, u8), String> {
+    if pkt.len() < 17 {
+        return Err(format!("Response too short: {} bytes", pkt.len()));
     }
 
-    // Verify message type
-    if m2[14] != 0x13 {
-        return Err(IpmiError::Protocol(format!(
-            "Unexpected message type in RAKP-M2: 0x{:02x} (expected 0x13)",
-            m2[14]
-        )));
-    }
-
-    let status = m2[17];
-    if status != 0x00 {
-        return Err(IpmiError::AuthFailed(format!(
-            "RAKP-M2 status: 0x{:02x}",
-            status
-        )));
-    }
-
-    // Managed system session ID (from message data)
-    session.managed_system_session_id = u32::from_le_bytes([m2[18], m2[19], m2[20], m2[21]]);
-
-    // Random_B (16 bytes)
-    session.random_b = m2[22..38].to_vec();
-
-    // GUID (16 bytes) - stored but not currently used
-    let _guid = &m2[38..54];
-
-    log::debug!(
-        "RAKP-M2 parsed: sid=0x{:08x}",
-        session.managed_system_session_id
-    );
-
-    Ok(())
-}
-
-/// Build RAKP-M3 (IPMI 2.0 Message 5)
-fn build_rakp_m3(session: &IpmiSession) -> IpmiResult<Vec<u8>> {
-    let mut pkt = Vec::new();
-
-    // RMCP header
-    pkt.extend_from_slice(&[0x06, 0xff, 0x07, 0xca]);
-
-    // Session header: auth=0x00, seq=0, sid=managed_system_session_id
-    pkt.push(0x00); // Auth type = None
-    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Seq = 0
-    pkt.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-
-    // RAKP-M3 header
-    pkt.push(0x00); // Message tag
-    pkt.push(0x14); // Message type: RAKP-M3
-
-    // Message length (2 bytes LE)
-    // Data: integrity_check_value (truncation_len bytes)
-    let icv_len = session.auth_algo.truncation_len() as u16;
-    pkt.extend_from_slice(&icv_len.to_le_bytes());
-
-    // Compute RAKP-M3 integrity check value per IPMI 2.0 spec Section 22.16
-    // ICV = HMAC(Kg, Random_A || Random_B || ManagedSystemSessionID || AuthAlgorithm || UserNameLen || UserName)
-    // Kg = HMAC(Password, Random_B || ManagedSystemSessionID)
-    let mut kg_input = session.random_b.clone();
-    kg_input.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-    let kg = compute_hmac(session.auth_algo, &session.password, &kg_input)?;
-
-    let mut icv_input = Vec::new();
-    icv_input.extend_from_slice(&session.random_a);
-    icv_input.extend_from_slice(&session.random_b);
-    icv_input.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-    icv_input.push(session.auth_algo as u8);
-    icv_input.push(session.username.len() as u8);
-    icv_input.extend_from_slice(session.username.as_bytes());
-
-    let full_icv = compute_hmac(session.auth_algo, &kg, &icv_input)?;
-    let icv = trunc_hmac(session.auth_algo, &full_icv);
-
-    pkt.extend_from_slice(&icv);
-
-    // Checksum
-    let checksum = compute_checksum(&pkt[4..]);
-    pkt.push(checksum);
-
-    Ok(pkt)
-}
-
-/// Parse RAKP-M4 (IPMI 2.0 Message 6)
-fn parse_rakp_m4(m4: &[u8], session: &mut IpmiSession) -> IpmiResult<()> {
-    // RMCP header: 4 bytes (0-3)
-    // Session header: 9 bytes (4-12)
-    // Message tag: 1 byte (13)
-    // Message type: 1 byte (14) = 0x15 (RAKP-M4)
-    // Message length: 2 bytes (15-16)
-    // Status: 1 byte (17)
-    // GUID: 16 bytes (18-33)
-    // Managed system session ID: 4 bytes (34-37)
-    // Integrity check value: variable (38+)
-    // Checksum: 1 byte (last)
-
-    let icv_len = session.auth_algo.truncation_len();
-    let min_len = 38 + icv_len + 1; // header + icv + checksum
-
-    if m4.len() < min_len {
-        return Err(IpmiError::Protocol(format!(
-            "RAKP-M4 too short: {} bytes (need at least {})",
-            m4.len(),
-            min_len
-        )));
-    }
-
-    // Verify message type
-    if m4[14] != 0x15 {
-        return Err(IpmiError::Protocol(format!(
-            "Unexpected message type in RAKP-M4: 0x{:02x} (expected 0x15)",
-            m4[14]
-        )));
-    }
-
-    let status = m4[17];
-    if status != 0x00 {
-        return Err(IpmiError::AuthFailed(format!(
-            "RAKP-M4 status: 0x{:02x}",
-            status
-        )));
-    }
-
-    // GUID (16 bytes)
-    let _guid = &m4[18..34];
-
-    // Managed system session ID (from message data, should match)
-    let sid = u32::from_le_bytes([m4[34], m4[35], m4[36], m4[37]]);
-    if sid != session.managed_system_session_id {
-        log::warn!(
-            "RAKP-M4 session ID mismatch: expected 0x{:08x}, got 0x{:08x}",
-            session.managed_system_session_id,
-            sid
-        );
-    }
-
-    // Integrity check value
-    let received_icv = &m4[38..38 + icv_len];
-
-    // Verify RAKP-M4 ICV per IPMI 2.0 spec
-    // ICV = HMAC(Kg, Random_A || Random_B || ManagedSystemSessionID || UserNameLen || UserName)
-    let mut kg_input = session.random_b.clone();
-    kg_input.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-    let kg = compute_hmac(session.auth_algo, &session.password, &kg_input)?;
-
-    let mut icv_input = Vec::new();
-    icv_input.extend_from_slice(&session.random_a);
-    icv_input.extend_from_slice(&session.random_b);
-    icv_input.extend_from_slice(&session.managed_system_session_id.to_le_bytes());
-    icv_input.push(session.username.len() as u8);
-    icv_input.extend_from_slice(session.username.as_bytes());
-
-    let full_expected_icv = compute_hmac(session.auth_algo, &kg, &icv_input)?;
-    let expected_icv = trunc_hmac(session.auth_algo, &full_expected_icv);
-
-    if received_icv != expected_icv {
-        return Err(IpmiError::AuthFailed(
-            "RAKP-M4 integrity check failed".into(),
+    let payload_type = pkt[5] & 0x3F;
+    if payload_type != PAYLOAD_OPEN_SESSION_RSP {
+        return Err(format!(
+            "Not Open Session Response: payload_type=0x{:02x}",
+            payload_type
         ));
     }
 
-    // Derive session keys
-    session.sik = derive_sik(
-        session.auth_algo,
-        &session.password,
-        &session.random_a,
-        &session.random_b,
-        session.managed_system_session_id,
-        &session.username.as_bytes(),
-    )?;
+    let msglen = u16::from_le_bytes([pkt[14], pkt[15]]) as usize;
+    if msglen < 1 {
+        return Err(format!("msglen={} is too small", msglen));
+    }
 
-    session.k1 = derive_k1(session.auth_algo, &session.sik)?;
-    session.k2 = derive_k2(session.auth_algo, &session.sik)?;
+    let p = 16;
 
-    log::debug!(
-        "RAKP-M4 verified: sik={} bytes, k1={} bytes, k2={} bytes",
-        session.sik.len(),
-        session.k1.len(),
-        session.k2.len()
-    );
+    let (_tag, actual_status) = if msglen == 1 {
+        (0u8, pkt[p])
+    } else {
+        (pkt[p], pkt[p + 1])
+    };
 
-    Ok(())
+    if actual_status != 0x00 {
+        return Err(format!(
+            "Open Session failed: status=0x{:02x} msglen={}",
+            actual_status, msglen
+        ));
+    }
+
+    if msglen < 36 {
+        return Err(format!(
+            "Success response msglen={} too small (need 36)",
+            msglen
+        ));
+    }
+
+    let managed_sid = u32::from_le_bytes([pkt[p + 8], pkt[p + 9], pkt[p + 10], pkt[p + 11]]);
+    let auth_algo = pkt[p + 16];
+    let integ_algo = pkt[p + 24];
+    let confid_algo = pkt[p + 32];
+
+    Ok((managed_sid, auth_algo, integ_algo, confid_algo))
 }
 
-/// Compute IPMI checksum: ~(sum of bytes) & 0xFF
-fn compute_checksum(data: &[u8]) -> u8 {
-    let sum: u8 = data.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
-    !sum
+fn build_rakp_m1(random_a: &[u8], managed_sid: u32, username: &str, priv_level: u8) -> Vec<u8> {
+    let username_len = username.len().min(16);
+    let payload_len = 44 - (16 - username_len);
+
+    let mut pkt = Vec::with_capacity(4 + 10 + 2 + payload_len);
+
+    pkt.extend_from_slice(&RMCP_HEADER);
+
+    pkt.push(0x06);
+    pkt.push(PAYLOAD_RAKP_M1);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+    pkt.extend_from_slice(&(payload_len as u16).to_le_bytes());
+
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
+
+    pkt.extend_from_slice(&managed_sid.to_le_bytes());
+    pkt.extend_from_slice(random_a);
+
+    pkt.push(priv_level);
+    pkt.push(0x00);
+    pkt.push(0x00);
+
+    pkt.push(username_len as u8);
+    pkt.extend_from_slice(username.as_bytes());
+
+    pkt
 }
 
-fn pkcs7_pad(data: &[u8], block_size: usize) -> Vec<u8> {
-    let pad_len = block_size - (data.len() % block_size);
-    let mut padded = data.to_vec();
-    padded.extend(std::iter::repeat(pad_len as u8).take(pad_len));
-    padded
+fn parse_rakp_m2(pkt: &[u8]) -> Result<(u32, Vec<u8>, Vec<u8>), String> {
+    if pkt.len() < 56 {
+        return Err(format!("RAKP-M2 too short: {} bytes", pkt.len()));
+    }
+
+    let payload_type = pkt[5] & 0x3F;
+    if payload_type != PAYLOAD_RAKP_M2 {
+        return Err(format!(
+            "Not RAKP-M2: payload_type=0x{:02x}",
+            payload_type
+        ));
+    }
+
+    let msglen = u16::from_le_bytes([pkt[14], pkt[15]]) as usize;
+    if msglen < 1 {
+        return Err("RAKP-M2 msglen=0".into());
+    }
+
+    let p = 16;
+    let status = if msglen >= 2 { pkt[p + 1] } else { pkt[p] };
+    if status != 0x00 {
+        return Err(format!("RAKP-M2 failed: status=0x{:02x}", status));
+    }
+
+    let managed_sid = u32::from_le_bytes([pkt[p + 4], pkt[p + 5], pkt[p + 6], pkt[p + 7]]);
+    let random_b = pkt[p + 8..p + 24].to_vec();
+    let guid = pkt[p + 24..p + 40].to_vec();
+
+    Ok((managed_sid, random_b, guid))
 }
 
-fn cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
-    use cipher::block_padding::NoPadding;
-    use cipher::{BlockEncryptMut, KeyIvInit};
-    type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+fn build_rakp_m3(
+    managed_sid: u32,
+    console_id: u32,
+    _random_a: &[u8],
+    random_b: &[u8],
+    username: &str,
+    password: &[u8],
+    auth: u8,
+    priv_level: u8,
+) -> Vec<u8> {
+    let icv_len = rakp_icv_len(auth);
+    let padded_key = pad_key(password);
 
-    let encryptor = Aes128CbcEnc::new_from_slices(key, iv)
-        .map_err(|e| IpmiError::Protocol(format!("Invalid key/IV: {}", e)))?;
-    let mut buf = data.to_vec();
-    let _ = encryptor.encrypt_padded_mut::<NoPadding>(&mut buf, data.len());
-    Ok(buf)
+    let mut icv_input = Vec::new();
+    icv_input.extend_from_slice(random_b);
+    icv_input.extend_from_slice(&console_id.to_le_bytes());
+    icv_input.push(priv_level);
+    icv_input.push(username.len() as u8);
+    icv_input.extend_from_slice(username.as_bytes());
+
+    let full_icv = hmac_fn(auth, &padded_key, &icv_input).unwrap();
+    let icv = full_icv[..icv_len].to_vec();
+
+    let mut pkt = Vec::with_capacity(16 + 8 + icv_len);
+
+    pkt.extend_from_slice(&RMCP_HEADER);
+
+    pkt.push(0x06);
+    pkt.push(PAYLOAD_RAKP_M3);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+    pkt.extend_from_slice(&[0x00, 0x00]);
+
+    let sess_len_offset = pkt.len();
+
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
+
+    pkt.extend_from_slice(&managed_sid.to_le_bytes());
+
+    pkt.extend_from_slice(&icv);
+
+    let sess_len_val = (pkt.len() - sess_len_offset - 2) as u16;
+    pkt[sess_len_offset..sess_len_offset + 2]
+        .copy_from_slice(&sess_len_val.to_le_bytes());
+
+    pkt
 }
 
-pub fn cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> IpmiResult<Vec<u8>> {
-    use cipher::block_padding::NoPadding;
-    use cipher::{BlockDecryptMut, KeyIvInit};
-    type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+/// Parse RAKP Message 4 (ipmitool read_rakp4_message).
+/// Payload starts at byte 16:
+///   payload[0]     = Message tag
+///   payload[1]     = RMCP+ status code
+///   payload[2..3]  = Reserved
+///   payload[4..7]  = Console Session ID (4 bytes LE, echoed back)
+///   payload[8..]   = Integrity Check Value (ICV, truncated HMAC)
+///
+/// RAKP-M4 ICV = HMAC(auth, SIK, Random_A || SIDc || GUIDc)
+/// where SIDc = BMC session ID (from Open Session Response), GUIDc = BMC GUID (from RAKP-M2).
+fn parse_rakp_m4(pkt: &[u8], auth: u8, integ: u8, sik: &[u8], random_a: &[u8], bmc_id: u32, bmc_guid: &[u8]) -> Result<Vec<u8>, String> {
+    // RAKP-M4 ICV is TRUNCATED (12 bytes for SHA1_96, 16 for MD5_128/SHA256_128)
+    let icv_len = integrity_code_len(integ);
 
-    let decryptor = Aes128CbcDec::new_from_slices(key, iv)
-        .map_err(|e| IpmiError::Protocol(format!("Invalid key/IV: {}", e)))?;
-    let mut buf = data.to_vec();
-    decryptor
-        .decrypt_padded_mut::<NoPadding>(&mut buf)
-        .map_err(|e| IpmiError::Protocol(format!("Decryption failed: {}", e)))?;
-    Ok(buf)
+    let payload_type = pkt[5] & 0x3F;
+    if payload_type != PAYLOAD_RAKP_M4 {
+        return Err(format!(
+            "Not RAKP-M4: payload_type=0x{:02x}",
+            payload_type
+        ));
+    }
+
+    let msglen = u16::from_le_bytes([pkt[14], pkt[15]]) as usize;
+    if msglen < 8 {
+        return Err(format!("RAKP-M4 msglen={} too small (need >= 8)", msglen));
+    }
+
+    let p = 16;
+    let status = pkt[p + 1];
+    if status != 0x00 {
+        return Err(format!("RAKP-M4 failed: status=0x{:02x}", status));
+    }
+
+    // AST2600 (Supermicro) quirk: GUID field is ABSENT from RAKP-M4 response.
+    // With GUID:   payload = 8 + 16 + icv_len; ICV at p+24
+    // Without GUID: payload = 8 + icv_len;     ICV at p+8
+    let has_guid = (msglen - 8) != icv_len;
+    let icv_start = if has_guid { p + 8 + 16 } else { p + 8 };
+    if icv_start + icv_len > pkt.len() {
+        return Err(format!(
+            "RAKP-M4 too short for ICV: need {} bytes at offset {}, got {}",
+            icv_len,
+            icv_start,
+            pkt.len()
+        ));
+    }
+    let received_icv = pkt[icv_start..icv_start + icv_len].to_vec();
+
+    // Verify: ICV = HMAC(auth, SIK, Random_A || SIDc || GUIDc)
+    // SIDc = BMC session ID from Open Session Response, GUIDc = BMC GUID from RAKP-M2
+    let mut verify_input = Vec::new();
+    verify_input.extend_from_slice(random_a);
+    verify_input.extend_from_slice(&bmc_id.to_le_bytes());
+    verify_input.extend_from_slice(bmc_guid);
+
+    let full_expected_icv = hmac_fn(auth, sik, &verify_input)
+        .map_err(|e| format!("HMAC error: {}", e))?;
+    let expected_icv = full_expected_icv[..icv_len].to_vec();
+
+    if received_icv != expected_icv {
+        return Err("RAKP-M4 ICV mismatch".into());
+    }
+
+    Ok(received_icv)
 }
 
 #[cfg(test)]
@@ -929,11 +976,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pkcs7_pad() {
+    fn test_ipmi_pad() {
         let data = vec![0x01, 0x02, 0x03];
-        let padded = pkcs7_pad(&data, 16);
+        let padded = ipmi_pad(&data);
         assert_eq!(padded.len(), 16);
-        assert_eq!(padded[3], 13);
+        // Pad with incrementing bytes 0x01, 0x02, ... (NOT zeros)
+        assert_eq!(padded[3], 0x01);
+        assert_eq!(padded[4], 0x02);
+        assert_eq!(padded[14], 0x0C);
+        assert_eq!(padded[15], 12); // pad_length = pad_len - 1
+    }
+
+    #[test]
+    fn test_ipmi_pad_aligned() {
+        let data = vec![0x01; 16];
+        let padded = ipmi_pad(&data);
+        assert_eq!(padded.len(), 32);
+        assert_eq!(padded[31], 15);
     }
 
     #[test]
@@ -949,22 +1008,36 @@ mod tests {
     }
 
     #[test]
+    fn test_checksum() {
+        let data = [0x01, 0x02, 0x03];
+        let cs = checksum(&data);
+        assert_eq!(cs, 0xFA);
+    }
+
+    #[test]
+    fn test_pad_key() {
+        let short = pad_key(b"ADMIN");
+        assert_eq!(short.len(), 20);
+        assert_eq!(&short[..5], b"ADMIN");
+        assert_eq!(&short[5..], &[0u8; 15]);
+
+        let exact = pad_key(&[0x42u8; 20]);
+        assert_eq!(exact.len(), 20);
+        assert_eq!(exact, [0x42u8; 20]);
+
+        let long = pad_key(&[0x42u8; 25]);
+        assert_eq!(long.len(), 20);
+        assert_eq!(long, [0x42u8; 20]);
+    }
+
+    #[test]
     fn test_cbc_roundtrip() {
         let key = [0x42u8; 16];
         let iv = [0x24u8; 16];
         let data = b"Hello IPMI!";
-        let padded = pkcs7_pad(data, 16);
-        let encrypted = cbc_encrypt(&key, &iv, &padded).unwrap();
+        let padded = ipmi_pad(data);
+        let encrypted = aes_cbc_encrypt(&key, &iv, &padded).unwrap();
         let decrypted = cbc_decrypt(&key, &iv, &encrypted).unwrap();
         assert_eq!(decrypted, padded);
-    }
-
-    #[test]
-    fn test_checksum() {
-        // Simple checksum test
-        let data = [0x01, 0x02, 0x03];
-        let cs = compute_checksum(&data);
-        // 0x01 + 0x02 + 0x03 = 0x06, !0x06 = 0xF9
-        assert_eq!(cs, 0xF9);
     }
 }
