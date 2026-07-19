@@ -27,7 +27,7 @@ const CRYPT_AES_CBC_128: u8 = 0x01;
 
 const IPMI_AUTHCODE_BUFFER_SIZE: usize = 20;
 
-const RMCP_HEADER: [u8; 4] = [0xFF, 0x00, 0xFF, 0x07];
+const RMCP_HEADER: [u8; 4] = [0x06, 0x00, 0xFF, 0x07];
 
 const PAYLOAD_OPEN_SESSION_REQ: u8 = 0x10;
 const PAYLOAD_OPEN_SESSION_RSP: u8 = 0x11;
@@ -628,15 +628,15 @@ impl IpmiClient {
             // ipmitool: payload_size = bytes_decrypted - conf_pad_length - 1
             let ipmi_response = &decrypted[..decrypted.len() - pad_len - 1];
 
-            if ipmi_response.len() >= 3 {
-                let completion = ipmi_response[ipmi_response.len() - 1];
+            if ipmi_response.len() >= 7 {
+                let completion = ipmi_response[6];
                 if completion != 0 {
                     return Err(IpmiError::Protocol(format!(
                         "IPMI command returned completion code: 0x{:02x}",
                         completion
                     )));
                 }
-                Ok(ipmi_response[..ipmi_response.len() - 1].to_vec())
+                Ok(ipmi_response[7..ipmi_response.len() - 1].to_vec())
             } else {
                 Ok(ipmi_response.to_vec())
             }
@@ -666,15 +666,15 @@ impl IpmiClient {
                 ));
             }
 
-            if ipmi_response.len() >= 3 {
-                let completion = ipmi_response[ipmi_response.len() - 1];
+            if ipmi_response.len() >= 7 {
+                let completion = ipmi_response[6];
                 if completion != 0 {
                     return Err(IpmiError::Protocol(format!(
                         "IPMI command returned completion code: 0x{:02x}",
                         completion
                     )));
                 }
-                Ok(ipmi_response[..ipmi_response.len() - 1].to_vec())
+                Ok(ipmi_response[7..ipmi_response.len() - 1].to_vec())
             } else {
                 Ok(ipmi_response.to_vec())
             }

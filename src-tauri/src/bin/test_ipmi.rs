@@ -21,7 +21,7 @@ const INTEG_SHA256_128:  u8 = 0x04;
 const CRYPT_NONE:        u8 = 0x00;
 const CRYPT_AES_CBC_128: u8 = 0x01;
 
-const RMCP_HEADER: [u8; 4] = [0xFF, 0x00, 0xFF, 0x07];
+const RMCP_HEADER: [u8; 4] = [0x06, 0x00, 0xFF, 0x07];
 
 type HmacMd5 = Hmac<md5::Md5>;
 type HmacSha1 = Hmac<Sha1>;
@@ -1006,11 +1006,11 @@ async fn main() {
                                                                 let pad_len = *decrypted.last().unwrap_or(&0) as usize;
                                                                 let ipmi_response = &decrypted[..decrypted.len() - pad_len - 1];
                                                                 println!("  IPMI response after decrypt ({}b): {}", ipmi_response.len(), hex_str(ipmi_response));
-                                                                if ipmi_response.len() >= 6 {
-                                                                    let rs_netfn = ipmi_response[1];
-                                                                    let completion = ipmi_response[ipmi_response.len() - 2];
-                                                                    println!("  IPMI rs_netfn=0x{:02x} completion=0x{:02x}", rs_netfn, completion);
-                                                                    Some(ipmi_response[5..ipmi_response.len()-1].to_vec())
+                                                                 if ipmi_response.len() >= 7 {
+                                                                     let rs_netfn = ipmi_response[1];
+                                                                     let completion = ipmi_response[6];
+                                                                     println!("  IPMI rs_netfn=0x{:02x} completion=0x{:02x}", rs_netfn, completion);
+                                                                     Some(ipmi_response[6..ipmi_response.len()-1].to_vec())
                                                                 } else {
                                                                     println!("  IPMI payload too short: {} bytes", ipmi_response.len());
                                                                     None
@@ -1039,11 +1039,11 @@ async fn main() {
                                                                     return None;
                                                                 }
 
-                                                                if payload.len() >= 6 {
-                                                                    let rs_netfn = payload[1];
-                                                                    let completion = payload[payload.len() - 2];
-                                                                    println!("  IPMI rs_netfn=0x{:02x} completion=0x{:02x}", rs_netfn, completion);
-                                                                    Some(payload[5..payload.len()-1].to_vec())
+                                                                 if payload.len() >= 7 {
+                                                                     let rs_netfn = payload[1];
+                                                                     let completion = payload[6];
+                                                                     println!("  IPMI rs_netfn=0x{:02x} completion=0x{:02x}", rs_netfn, completion);
+                                                                     Some(payload[6..payload.len()-1].to_vec())
                                                                 } else {
                                                                     println!("  IPMI payload too short: {} bytes", payload.len());
                                                                     None
