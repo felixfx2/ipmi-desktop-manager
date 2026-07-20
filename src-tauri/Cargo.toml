@@ -2,6 +2,7 @@
 name = "ipmi-desktop-manager"
 version = "0.1.0"
 edition = "2021"
+default-run = "ipmi-desktop-manager"
 description = "Native IPMI/BMC management application for Supermicro servers"
 authors = ["IPMI Desktop Manager"]
 license = "MIT"

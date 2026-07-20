@@ -11,7 +11,6 @@ pub mod sol;
 
 pub const IPMI_PORT: u16 = 623;
 
-const AUTH_NONE: u8 = 0x00;
 const AUTH_SHA1: u8 = 0x01;
 const AUTH_MD5: u8 = 0x02;
 const AUTH_SHA256: u8 = 0x03;
@@ -292,7 +291,10 @@ impl IpmiClient {
 
     pub async fn disconnect(&mut self) -> IpmiResult<()> {
         if self.session.as_ref().is_some_and(|s| s.is_active()) {
-            let _ = self.close_session().await;
+            log::info!("Sending Close Session before disconnect");
+            if let Err(e) = self.close_session().await {
+                log::warn!("Close session failed (may be stale): {}", e);
+            }
         }
         self.socket = None;
         self.session = None;
@@ -327,6 +329,8 @@ impl IpmiClient {
             parse_open_session_response(&buf[..n])
                 .map_err(IpmiError::Protocol)?;
 
+        log::debug!("Open Session Response: {} bytes", n);
+
         session.managed_system_session_id = managed_sid;
         session.auth_algo = neg_auth;
         session.integ_algo = neg_integ;
@@ -358,7 +362,7 @@ impl IpmiClient {
             &random_a,
             session.managed_system_session_id,
             &session.username,
-            session.priv_level,
+            session.priv_level | 0x80, // NameOnly flag required by BMC for RAKP-M1
         );
         log::debug!("RAKP-M1: {} bytes", m1.len());
         socket.send(&m1).await?;
@@ -390,7 +394,7 @@ impl IpmiClient {
             &session.username,
             &session.password,
             session.auth_algo,
-            session.priv_level & 0x0F, // raw privilege (strip NameOnly bit)
+            session.priv_level | 0x80, // NameOnly flag must match RAKP-M1 per BMC requirement
         );
         log::debug!("RAKP-M3: {} bytes", m3.len());
         socket.send(&m3).await?;
@@ -400,7 +404,7 @@ impl IpmiClient {
             &session.password,
             &session.random_a,
             &session.random_b,
-            session.priv_level & 0x0F, // raw privilege (strip NameOnly bit)
+            session.priv_level | 0x80, // NameOnly flag must match RAKP-M1/M3 per BMC requirement
             &session.username,
         )?;
         let k1 = derive_k1(session.auth_algo, &sik)?;
@@ -459,6 +463,8 @@ impl IpmiClient {
         msg.push(cmd);
         msg.extend_from_slice(data);
         msg.push(checksum(&msg[3..]));
+
+        log::debug!("send_ipmi_command netfn=0x{:02x} cmd=0x{:02x} data={:02x?} seq={} rqseq_lun=0x{:02x}", netfn, cmd, data, seq, rqseq_lun);
 
         let auth_type: u8 = 0x06; // ipmitool: "ipmi session Auth Type / Format is always 0x06 for IPMI v2"
         // IPMI_MESSAGE (0x00) with auth/encryption flags per IPMI v2.0 spec:
@@ -627,6 +633,7 @@ impl IpmiClient {
 
             // ipmitool: payload_size = bytes_decrypted - conf_pad_length - 1
             let ipmi_response = &decrypted[..decrypted.len() - pad_len - 1];
+            log::debug!("decrypted IPMI resp ({}b): {:02x?}", ipmi_response.len(), &ipmi_response[..ipmi_response.len().min(16)]);
 
             if ipmi_response.len() >= 7 {
                 let completion = ipmi_response[6];
@@ -682,7 +689,9 @@ impl IpmiClient {
     }
 
     async fn close_session(&mut self) -> IpmiResult<()> {
-        self.send_ipmi_command(0x06, 0x3c, &[]).await?;
+        let session = self.session.as_ref().ok_or_else(|| IpmiError::Session("No session".into()))?;
+        let sid = session.managed_system_session_id.to_le_bytes();
+        self.send_ipmi_command(0x06, 0x3c, &sid).await?;
         Ok(())
     }
 
@@ -691,7 +700,7 @@ impl IpmiClient {
     }
 }
 
-fn build_open_session(auth: u8, integ: u8, confid: u8, init_sid: u32) -> Vec<u8> {
+pub fn build_open_session(auth: u8, integ: u8, confid: u8, init_sid: u32) -> Vec<u8> {
     let mut pkt = Vec::with_capacity(48);
 
     pkt.extend_from_slice(&RMCP_HEADER);
@@ -741,7 +750,7 @@ fn build_open_session(auth: u8, integ: u8, confid: u8, init_sid: u32) -> Vec<u8>
     pkt
 }
 
-fn parse_open_session_response(pkt: &[u8]) -> Result<(u32, u8, u8, u8), String> {
+pub fn parse_open_session_response(pkt: &[u8]) -> Result<(u32, u8, u8, u8), String> {
     if pkt.len() < 17 {
         return Err(format!("Response too short: {} bytes", pkt.len()));
     }
@@ -789,7 +798,7 @@ fn parse_open_session_response(pkt: &[u8]) -> Result<(u32, u8, u8, u8), String> 
     Ok((managed_sid, auth_algo, integ_algo, confid_algo))
 }
 
-fn build_rakp_m1(random_a: &[u8], managed_sid: u32, username: &str, priv_level: u8) -> Vec<u8> {
+pub fn build_rakp_m1(random_a: &[u8], managed_sid: u32, username: &str, priv_level: u8) -> Vec<u8> {
     let username_len = username.len().min(16);
     let payload_len = 44 - (16 - username_len);
 
@@ -876,7 +885,7 @@ fn build_rakp_m3(
     let full_icv = hmac_fn(auth, &padded_key, &icv_input).unwrap();
     let icv = full_icv[..icv_len].to_vec();
 
-    let mut pkt = Vec::with_capacity(16 + 8 + icv_len);
+    let mut pkt = Vec::with_capacity(16 + 2 + 8 + icv_len);
 
     pkt.extend_from_slice(&RMCP_HEADER);
 
@@ -885,22 +894,13 @@ fn build_rakp_m3(
     pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
 
-    pkt.extend_from_slice(&[0x00, 0x00]);
+    let payload_len = (1 + 3 + 4 + icv_len) as u16;
+    pkt.extend_from_slice(&payload_len.to_le_bytes());
 
-    let sess_len_offset = pkt.len();
-
     pkt.push(0x00);
-    pkt.push(0x00);
-    pkt.push(0x00);
-    pkt.push(0x00);
-
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00]);
     pkt.extend_from_slice(&managed_sid.to_le_bytes());
-
     pkt.extend_from_slice(&icv);
-
-    let sess_len_val = (pkt.len() - sess_len_offset - 2) as u16;
-    pkt[sess_len_offset..sess_len_offset + 2]
-        .copy_from_slice(&sess_len_val.to_le_bytes());
 
     pkt
 }
@@ -933,9 +933,13 @@ fn parse_rakp_m4(pkt: &[u8], auth: u8, integ: u8, sik: &[u8], random_a: &[u8], b
     }
 
     let p = 16;
+    // RAKP-M4 format: Tag(1) + Status(1) + Reserved(2) + [GUIDc(16)] + AuthCode(var)
+    // Status code is at offset p+1 (per IPMI v2.0 spec Table 13-16)
     let status = pkt[p + 1];
     if status != 0x00 {
-        return Err(format!("RAKP-M4 failed: status=0x{:02x}", status));
+        // Don't return error yet — status 0x08 on AST2600 sometimes precedes valid ICV
+        // Fall through to ICV verification; if ICV matches, the session is valid
+        log::warn!("RAKP-M4 status=0x{:02x} — attempting ICV verification anyway", status);
     }
 
     // AST2600 (Supermicro) quirk: GUID field is ABSENT from RAKP-M4 response.

@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;

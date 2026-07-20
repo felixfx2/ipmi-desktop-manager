@@ -741,8 +741,9 @@ const App = {
 
   async loadSavedCredentials() {
     try {
-      const creds = await invoke('load_credentials');
-      if (creds) {
+      const result = await invoke('load_credentials');
+      if (result) {
+        const [creds, password] = result;
         const setHost = document.getElementById('set-host');
         const setPort = document.getElementById('set-port');
         const setUsername = document.getElementById('set-username');
@@ -754,7 +755,7 @@ const App = {
         if (setUsername) setUsername.value = creds.username || '';
         if (setProtocol) setProtocol.value = creds.protocol_mode || 'Auto';
         if (setSkipTls) setSkipTls.checked = creds.skip_tls_verify || false;
-        if (setPassword) setPassword.focus();
+        if (setPassword && password) setPassword.value = password;
       }
     } catch (e) {
       console.warn('Failed to load saved credentials:', e);

@@ -1,5 +1,5 @@
-mod ipmi;
-mod redfish;
+pub mod ipmi;
+pub mod redfish;
 mod keychain;
 mod commands;
 

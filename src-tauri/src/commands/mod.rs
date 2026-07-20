@@ -163,9 +163,8 @@ pub async fn save_credentials(
 }
 
 #[tauri::command]
-pub async fn load_credentials() -> Result<Option<StoredCredentials>, String> {
+pub async fn load_credentials() -> Result<Option<(StoredCredentials, String)>, String> {
     keychain::load_credentials()
-        .map(|opt| opt.map(|(creds, _)| creds))
         .map_err(|e| e.to_string())
 }
 
@@ -219,7 +218,7 @@ pub async fn power_on(state: tauri::State<'_, AppState>) -> Result<String, Strin
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x01]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x01]).await.map_err(|e| e.to_string())?;
     Ok("Power on sent via IPMI".to_string())
 }
 
@@ -234,7 +233,7 @@ pub async fn power_off(state: tauri::State<'_, AppState>) -> Result<String, Stri
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x00]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x00]).await.map_err(|e| e.to_string())?;
     Ok("Power off sent via IPMI".to_string())
 }
 
@@ -249,7 +248,7 @@ pub async fn power_cycle(state: tauri::State<'_, AppState>) -> Result<String, St
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x03]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x02]).await.map_err(|e| e.to_string())?;
     Ok("Power cycle sent via IPMI".to_string())
 }
 
@@ -264,7 +263,7 @@ pub async fn graceful_shutdown(state: tauri::State<'_, AppState>) -> Result<Stri
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x05]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x05]).await.map_err(|e| e.to_string())?;
     Ok("Graceful shutdown sent via IPMI".to_string())
 }
 
@@ -279,7 +278,7 @@ pub async fn force_off(state: tauri::State<'_, AppState>) -> Result<String, Stri
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x00]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x00]).await.map_err(|e| e.to_string())?;
     Ok("Force off sent via IPMI".to_string())
 }
 
@@ -294,7 +293,7 @@ pub async fn hard_reset(state: tauri::State<'_, AppState>) -> Result<String, Str
     }
 
     let mut client = state.ipmi_client.lock().await;
-    client.send_ipmi_command(0x00, 0x30, &[0x02]).await.map_err(|e| e.to_string())?;
+    client.send_ipmi_command(0x00, 0x02, &[0x03]).await.map_err(|e| e.to_string())?;
     Ok("Hard reset sent via IPMI".to_string())
 }
 
