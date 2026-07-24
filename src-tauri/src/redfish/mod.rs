@@ -168,7 +168,7 @@ impl RedfishSession {
 
     pub async fn login(&mut self) -> RedfishResult<()> {
         let client = self.client();
-        let url = format!("{}/rest/v1/SessionService/Sessions", self.base_url);
+        let url = format!("{}/redfish/v1/SessionService/Sessions", self.base_url);
 
         let body = serde_json::json!({
             "UserName": self.username,
@@ -216,7 +216,7 @@ impl RedfishSession {
 
     pub async fn get_json(&self, path: &str) -> RedfishResult<serde_json::Value> {
         let client = self.client();
-        let url = format!("{}/rest/v1/{}", self.base_url, path.trim_start_matches('/'));
+        let url = format!("{}/redfish/v1/{}", self.base_url, path.trim_start_matches('/'));
 
         let mut req = client.get(&url);
         if let Some(ref token) = self.token {
@@ -238,7 +238,7 @@ impl RedfishSession {
 
     pub async fn post_action(&self, path: &str, action: &str, body: Option<serde_json::Value>) -> RedfishResult<()> {
         let client = self.client();
-        let url = format!("{}/rest/v1/{}/Actions/{}", self.base_url, path.trim_start_matches('/'), action);
+        let url = format!("{}/redfish/v1/{}/Actions/{}", self.base_url, path.trim_start_matches('/'), action);
 
         let mut req = client.post(&url);
         if let Some(ref token) = self.token {
@@ -256,7 +256,7 @@ impl RedfishSession {
     }
 
     pub async fn get_system_info(&self) -> RedfishResult<SystemInfo> {
-        let val = self.get_json("Systems/system").await?;
+        let val = self.get_json("Systems/1").await?;
 
         Ok(SystemInfo {
             name: val.get("Name").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
@@ -323,7 +323,7 @@ impl RedfishSession {
     }
 
     pub async fn get_power_state(&self) -> RedfishResult<String> {
-        let val = self.get_json("Systems/system").await?;
+        let val = self.get_json("Systems/1").await?;
         Ok(val.get("PowerState").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string())
     }
 
@@ -331,11 +331,11 @@ impl RedfishSession {
         let body = serde_json::json!({
             "ResetType": state
         });
-        self.post_action("Systems/system", "ComputerSystem.Reset", Some(body)).await
+        self.post_action("Systems/1", "ComputerSystem.Reset", Some(body)).await
     }
 
     pub async fn get_sel(&self) -> RedfishResult<Vec<SelEntry>> {
-        let val = self.get_json("Managers/1/LogServices/Sel/Entries").await?;
+        let val = self.get_json("Managers/1/LogServices/Log1/Entries").await?;
 
         let entries = val.get("Members")
             .and_then(|v| v.as_array())
@@ -357,12 +357,12 @@ impl RedfishSession {
 
     pub async fn clear_sel(&self) -> RedfishResult<()> {
         let body = serde_json::json!({});
-        self.post_action("Managers/1/LogServices/Sel", "LogService.ClearLog", Some(body)).await
+        self.post_action("Managers/1/LogServices/Log1", "LogService.ClearLog", Some(body)).await
     }
 
     pub async fn get_fru(&self) -> RedfishResult<FruInfo> {
         let chassis_val = self.get_json("Chassis/1").await;
-        let system_val = self.get_json("Systems/system").await;
+        let system_val = self.get_json("Systems/1").await;
 
         Ok(FruInfo {
             board: Some(FruBoard {
@@ -421,7 +421,7 @@ impl RedfishSession {
     pub async fn get_firmware_info(&self) -> RedfishResult<FirmwareInfo> {
         let manager_val = self.get_json("Managers/1").await;
 
-        let bios_val = self.get_json("Systems/system").await;
+        let bios_val = self.get_json("Systems/1").await;
 
         Ok(FirmwareInfo {
             bmc_version: manager_val.ok()
@@ -461,7 +461,7 @@ impl RedfishSession {
             "WriteProtected": true
         });
         let client = self.client();
-        let url = format!("{}/rest/v1/Managers/1/VirtualMedia/{}", self.base_url, slot);
+        let url = format!("{}/redfish/v1/Managers/1/VirtualMedia/{}", self.base_url, slot);
 
         let mut req = client.patch(&url).json(&body);
         if let Some(ref token) = self.token {
@@ -485,7 +485,7 @@ impl RedfishSession {
             }
         });
         let client = self.client();
-        let url = format!("{}/rest/v1/Systems/system", self.base_url);
+        let url = format!("{}/redfish/v1/Systems/1", self.base_url);
 
         let mut req = client.patch(&url).json(&body);
         if let Some(ref token) = self.token {
@@ -500,7 +500,7 @@ impl RedfishSession {
     pub async fn logout(&self) -> RedfishResult<()> {
         if let Some(ref session_id) = self.session_id {
             let client = self.client();
-            let url = format!("{}/rest/v1/SessionService/Sessions/{}", self.base_url, session_id);
+            let url = format!("{}/redfish/v1/SessionService/Sessions/{}", self.base_url, session_id);
             let _ = client.delete(&url).send().await;
         }
         Ok(())

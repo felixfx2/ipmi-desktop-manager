@@ -435,6 +435,12 @@
           "markdownDescription": "Get FRU information"
         },
         {
+          "description": "Get current connection protocol mode",
+          "type": "string",
+          "const": "allow-get-protocol-mode",
+          "markdownDescription": "Get current connection protocol mode"
+        },
+        {
           "description": "Get SEL log entries",
           "type": "string",
           "const": "allow-get-sel-entries",
@@ -535,6 +541,12 @@
           "type": "string",
           "const": "allow-stop-sol-output-stream",
           "markdownDescription": "Stop SOL output streaming"
+        },
+        {
+          "description": "Test Redfish endpoint connectivity",
+          "type": "string",
+          "const": "allow-test-redfish",
+          "markdownDescription": "Test Redfish endpoint connectivity"
         },
         {
           "description": "Unmount virtual media",

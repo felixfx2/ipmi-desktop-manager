@@ -189,19 +189,27 @@ pub async fn get_dashboard(state: tauri::State<'_, AppState>) -> Result<Dashboar
     };
 
     if let Some(ref session) = session_clone {
-        if let Ok(sys) = session.get_system_info().await {
-            dashboard.power_state = Some(sys.power_state.clone());
-            dashboard.system = Some(sys);
+        match session.get_system_info().await {
+            Ok(sys) => {
+                dashboard.power_state = Some(sys.power_state.clone());
+                dashboard.system = Some(sys);
+            }
+            Err(e) => log::warn!("Dashboard: get_system_info failed: {}", e),
         }
-        if let Ok(thermal) = session.get_thermal().await {
-            dashboard.thermal = Some(thermal);
+        match session.get_thermal().await {
+            Ok(thermal) => { dashboard.thermal = Some(thermal); }
+            Err(e) => log::warn!("Dashboard: get_thermal failed: {}", e),
         }
-        if let Ok(power) = session.get_power().await {
-            dashboard.power = Some(power);
+        match session.get_power().await {
+            Ok(power) => { dashboard.power = Some(power); }
+            Err(e) => log::warn!("Dashboard: get_power failed: {}", e),
         }
-        if let Ok(fw) = session.get_firmware_info().await {
-            dashboard.firmware = Some(fw);
+        match session.get_firmware_info().await {
+            Ok(fw) => { dashboard.firmware = Some(fw); }
+            Err(e) => log::warn!("Dashboard: get_firmware_info failed: {}", e),
         }
+    } else {
+        log::warn!("Dashboard: no Redfish session");
     }
 
     Ok(dashboard)
@@ -303,28 +311,38 @@ pub async fn get_sensors(state: tauri::State<'_, AppState>) -> Result<Vec<Sensor
 
     let rf = state.redfish_session.lock().await;
     if let Some(ref session) = *rf {
-        if let Ok(thermal) = session.get_thermal().await {
-            for t in &thermal.temperatures {
-                sensors.push(SensorReading {
-                    name: t.name.clone(),
-                    value: t.reading_celsius,
-                    unit: "\u{00b0}C".to_string(),
-                    status: t.status.health.clone().unwrap_or_else(|| "OK".to_string()),
-                    upper_critical: t.upper_critical,
-                    lower_critical: t.lower_critical,
-                });
+        match session.get_thermal().await {
+            Ok(thermal) => {
+                for t in &thermal.temperatures {
+                    sensors.push(SensorReading {
+                        name: t.name.clone(),
+                        value: t.reading_celsius,
+                        unit: "\u{00b0}C".to_string(),
+                        status: t.status.health.clone().unwrap_or_else(|| "OK".to_string()),
+                        upper_critical: t.upper_critical,
+                        lower_critical: t.lower_critical,
+                    });
+                }
+                for f in &thermal.fans {
+                    sensors.push(SensorReading {
+                        name: f.name.clone(),
+                        value: f.reading,
+                        unit: f.reading_units.clone().unwrap_or_else(|| "RPM".to_string()),
+                        status: f.status.health.clone().unwrap_or_else(|| "OK".to_string()),
+                        upper_critical: None,
+                        lower_critical: None,
+                    });
+                }
+                log::info!("Loaded {} sensors from Redfish", sensors.len());
             }
-            for f in &thermal.fans {
-                sensors.push(SensorReading {
-                    name: f.name.clone(),
-                    value: f.reading,
-                    unit: f.reading_units.clone().unwrap_or_else(|| "RPM".to_string()),
-                    status: f.status.health.clone().unwrap_or_else(|| "OK".to_string()),
-                    upper_critical: None,
-                    lower_critical: None,
-                });
+            Err(e) => {
+                log::warn!("Failed to get thermal data from Redfish: {}", e);
+                return Err(format!("Thermal data unavailable: {}", e));
             }
         }
+    } else {
+        log::warn!("No Redfish session available for get_sensors");
+        return Err("Redfish not connected".to_string());
     }
 
     Ok(sensors)
@@ -334,9 +352,13 @@ pub async fn get_sensors(state: tauri::State<'_, AppState>) -> Result<Vec<Sensor
 pub async fn get_sel_entries(state: tauri::State<'_, AppState>) -> Result<Vec<SelEntry>, String> {
     let rf = state.redfish_session.lock().await;
     if let Some(ref session) = *rf {
-        session.get_sel().await.map_err(|e| e.to_string())
+        session.get_sel().await.map_err(|e| {
+            log::warn!("get_sel_entries failed: {}", e);
+            format!("SEL unavailable: {}", e)
+        })
     } else {
-        Ok(Vec::new())
+        log::warn!("No Redfish session for get_sel_entries");
+        Err("Redfish not connected".to_string())
     }
 }
 
@@ -355,9 +377,13 @@ pub async fn clear_sel(state: tauri::State<'_, AppState>) -> Result<String, Stri
 pub async fn get_fru_info(state: tauri::State<'_, AppState>) -> Result<FruInfo, String> {
     let rf = state.redfish_session.lock().await;
     if let Some(ref session) = *rf {
-        session.get_fru().await.map_err(|e| e.to_string())
+        session.get_fru().await.map_err(|e| {
+            log::warn!("get_fru_info failed: {}", e);
+            format!("FRU unavailable: {}", e)
+        })
     } else {
-        Ok(FruInfo { board: None, product: None, chassis: None })
+        log::warn!("No Redfish session for get_fru_info");
+        Err("Redfish not connected".to_string())
     }
 }
 
@@ -425,7 +451,7 @@ pub async fn set_boot_device(state: tauri::State<'_, AppState>, target: String, 
             }
         });
         let client = session.client();
-        let url = format!("{}/rest/v1/Systems/system", session.base_url);
+        let url = format!("{}/redfish/v1/Systems/1", session.base_url);
         let mut req = client.patch(&url).json(&body);
         if let Some(ref token) = session.token {
             req = req.header("X-Auth-Token", token);
@@ -478,4 +504,50 @@ pub async fn start_sol_output_stream(
 #[tauri::command]
 pub async fn stop_sol_output_stream() -> Result<String, String> {
     Ok("SOL output stream stopped".to_string())
+}
+
+#[tauri::command]
+pub async fn test_redfish(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let rf = state.redfish_session.lock().await;
+    if let Some(ref session) = *rf {
+        let mut results = serde_json::Map::new();
+        results.insert("base_url".into(), serde_json::json!(session.base_url));
+        results.insert("has_token".into(), serde_json::json!(session.token.is_some()));
+
+        match session.get_json("Systems/1").await {
+            Ok(v) => { results.insert("systems_system".into(), serde_json::json!("OK")); results.insert("power_state".into(), v.get("PowerState").cloned().unwrap_or(serde_json::json!("?"))); }
+            Err(e) => { results.insert("systems_system".into(), serde_json::json!(format!("FAIL: {}", e))); }
+        }
+        match session.get_json("Chassis/1/Thermal").await {
+            Ok(v) => {
+                let temps = v.get("Temperatures").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let fans = v.get("Fans").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                results.insert("thermal".into(), serde_json::json!(format!("OK: {} temps, {} fans", temps, fans)));
+            }
+            Err(e) => { results.insert("thermal".into(), serde_json::json!(format!("FAIL: {}", e))); }
+        }
+        match session.get_json("Managers/1").await {
+            Ok(v) => {
+                let fw = v.get("FirmwareVersion").and_then(|v| v.as_str()).unwrap_or("?");
+                results.insert("managers_1".into(), serde_json::json!(format!("OK: {}", fw)));
+            }
+            Err(e) => { results.insert("managers_1".into(), serde_json::json!(format!("FAIL: {}", e))); }
+        }
+        match session.get_json("Managers/1/LogServices/Log1/Entries").await {
+            Ok(v) => {
+                let count = v.get("Members").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                results.insert("sel".into(), serde_json::json!(format!("OK: {} entries", count)));
+            }
+            Err(e) => { results.insert("sel".into(), serde_json::json!(format!("FAIL: {}", e))); }
+        }
+
+        Ok(serde_json::Value::Object(results))
+    } else {
+        Err("No Redfish session".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn get_protocol_mode(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    Ok(state.protocol_mode.lock().await.clone())
 }

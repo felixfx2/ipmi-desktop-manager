@@ -44,6 +44,8 @@ pub fn run() {
             commands::set_boot_device,
             commands::start_sol_output_stream,
             commands::stop_sol_output_stream,
+            commands::test_redfish,
+            commands::get_protocol_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

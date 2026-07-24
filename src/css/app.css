@@ -400,6 +400,12 @@ body {
   cursor: not-allowed;
 }
 
+.power-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .form-group {
   margin-bottom: 16px;
 }

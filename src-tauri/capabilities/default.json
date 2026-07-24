@@ -1,118 +1,38 @@
 {
-  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
+  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for IPMI Desktop Manager",
+  "description": "Default permissions for the IPMI Desktop Manager",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:event:default",
-    "core:event:allow-listen",
-    "core:event:allow-emit",
-    "core:event:allow-unlisten",
-    "shell:allow-open",
-    {
-      "identifier": "allow-connect",
-      "commands": { "allow": ["connect"] }
-    },
-    {
-      "identifier": "allow-disconnect",
-      "commands": { "allow": ["disconnect"] }
-    },
-    {
-      "identifier": "allow-get-connection-status",
-      "commands": { "allow": ["get_connection_status"] }
-    },
-    {
-      "identifier": "allow-save-credentials",
-      "commands": { "allow": ["save_credentials"] }
-    },
-    {
-      "identifier": "allow-load-credentials",
-      "commands": { "allow": ["load_credentials"] }
-    },
-    {
-      "identifier": "allow-delete-saved-credentials",
-      "commands": { "allow": ["delete_saved_credentials"] }
-    },
-    {
-      "identifier": "allow-get-dashboard",
-      "commands": { "allow": ["get_dashboard"] }
-    },
-    {
-      "identifier": "allow-power-on",
-      "commands": { "allow": ["power_on"] }
-    },
-    {
-      "identifier": "allow-power-off",
-      "commands": { "allow": ["power_off"] }
-    },
-    {
-      "identifier": "allow-power-cycle",
-      "commands": { "allow": ["power_cycle"] }
-    },
-    {
-      "identifier": "allow-graceful-shutdown",
-      "commands": { "allow": ["graceful_shutdown"] }
-    },
-    {
-      "identifier": "allow-force-off",
-      "commands": { "allow": ["force_off"] }
-    },
-    {
-      "identifier": "allow-hard-reset",
-      "commands": { "allow": ["hard_reset"] }
-    },
-    {
-      "identifier": "allow-get-sensors",
-      "commands": { "allow": ["get_sensors"] }
-    },
-    {
-      "identifier": "allow-get-sel-entries",
-      "commands": { "allow": ["get_sel_entries"] }
-    },
-    {
-      "identifier": "allow-clear-sel",
-      "commands": { "allow": ["clear_sel"] }
-    },
-    {
-      "identifier": "allow-get-fru-info",
-      "commands": { "allow": ["get_fru_info"] }
-    },
-    {
-      "identifier": "allow-sol-activate",
-      "commands": { "allow": ["sol_activate"] }
-    },
-    {
-      "identifier": "allow-sol-deactivate",
-      "commands": { "allow": ["sol_deactivate"] }
-    },
-    {
-      "identifier": "allow-sol-send-input",
-      "commands": { "allow": ["sol_send_input"] }
-    },
-    {
-      "identifier": "allow-mount-virtual-media",
-      "commands": { "allow": ["mount_virtual_media"] }
-    },
-    {
-      "identifier": "allow-unmount-virtual-media",
-      "commands": { "allow": ["unmount_virtual_media"] }
-    },
-    {
-      "identifier": "allow-get-virtual-media-status",
-      "commands": { "allow": ["get_virtual_media_status"] }
-    },
-    {
-      "identifier": "allow-set-boot-device",
-      "commands": { "allow": ["set_boot_device"] }
-    },
-    {
-      "identifier": "allow-start-sol-output-stream",
-      "commands": { "allow": ["start_sol_output_stream"] }
-    },
-    {
-      "identifier": "allow-stop-sol-output-stream",
-      "commands": { "allow": ["stop_sol_output_stream"] }
-    }
+    "shell:allow-execute",
+    "allow-connect",
+    "allow-disconnect",
+    "allow-get-connection-status",
+    "allow-save-credentials",
+    "allow-load-credentials",
+    "allow-delete-saved-credentials",
+    "allow-get-dashboard",
+    "allow-power-on",
+    "allow-power-off",
+    "allow-power-cycle",
+    "allow-graceful-shutdown",
+    "allow-force-off",
+    "allow-hard-reset",
+    "allow-get-sensors",
+    "allow-get-sel-entries",
+    "allow-clear-sel",
+    "allow-get-fru-info",
+    "allow-sol-activate",
+    "allow-sol-deactivate",
+    "allow-sol-send-input",
+    "allow-mount-virtual-media",
+    "allow-unmount-virtual-media",
+    "allow-get-virtual-media-status",
+    "allow-set-boot-device",
+    "allow-start-sol-output-stream",
+    "allow-stop-sol-output-stream",
+    "allow-test-redfish",
+    "allow-get-protocol-mode"
   ]
 }

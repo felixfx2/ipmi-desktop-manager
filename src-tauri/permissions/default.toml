@@ -129,6 +129,16 @@ description = "Stop SOL output streaming"
 commands.allow = ["stop_sol_output_stream"]
 
 [[permission]]
+identifier = "allow-test-redfish"
+description = "Test Redfish endpoint connectivity"
+commands.allow = ["test_redfish"]
+
+[[permission]]
+identifier = "allow-get-protocol-mode"
+description = "Get current connection protocol mode"
+commands.allow = ["get_protocol_mode"]
+
+[[permission]]
 identifier = "default"
 description = "Default permissions for IPMI Desktop Manager"
 permissions = [
@@ -158,4 +168,6 @@ permissions = [
     "allow-set-boot-device",
     "allow-start-sol-output-stream",
     "allow-stop-sol-output-stream",
+    "allow-test-redfish",
+    "allow-get-protocol-mode",
 ]

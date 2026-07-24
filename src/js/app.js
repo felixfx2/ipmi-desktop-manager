@@ -14,6 +14,7 @@ async function listen(event, handler) {
 const App = {
   currentPage: 'dashboard',
   connected: false,
+  protocolMode: 'Auto',
   theme: localStorage.getItem('theme') || 'dark',
   sensorInterval: null,
   sensorRefreshRate: 5000,
@@ -49,7 +50,9 @@ const App = {
     this.renderSidebar();
     this.bindKeyboardShortcuts();
     this.navigate('dashboard');
-    this.checkConnectionStatus();
+    this.checkConnectionStatus().then(() => {
+      if (!this.connected) this.autoConnect();
+    });
   },
 
   applyTheme() {
@@ -61,6 +64,9 @@ const App = {
       const connected = await invoke('get_connection_status');
       this.connected = connected;
       this.updateConnectionStatus(connected);
+      if (connected && this.currentPage === 'dashboard') {
+        this.loadDashboard();
+      }
     } catch (e) {
       this.connected = false;
       this.updateConnectionStatus(false);
@@ -161,6 +167,16 @@ const App = {
   },
 
   async loadDashboard() {
+    if (!this.connected) {
+      ['d-power','d-server','d-bmc','d-bios','d-cpu-temp','d-power-draw'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '--';
+      });
+      this.showNotConnected('d-fans');
+      this.showNotConnected('d-temps');
+      return;
+    }
+
     try {
       const data = await invoke('get_dashboard');
 
@@ -221,35 +237,37 @@ const App = {
   },
 
   renderPower(body, actions) {
+    const isRedfish = this.connected && (this.protocolMode === 'Auto' || this.protocolMode === 'Redfish Only');
     body.innerHTML = `
       <div class="card">
         <div class="card-header">
           <div class="card-title">Power State</div>
-          <span class="badge badge-info" id="power-state-badge">Unknown</span>
+          <span class="badge badge-info" id="power-state-badge">${this.connected ? 'Checking...' : 'Unknown'}</span>
         </div>
         <div class="power-controls">
-          <button class="power-btn" onclick="App.powerAction('power_on')">
+          <button class="power-btn" onclick="App.powerAction('power_on')" ${!this.connected ? 'disabled' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
             <span class="power-btn-label">Power On</span>
           </button>
-          <button class="power-btn warning" onclick="App.powerAction('graceful_shutdown')">
+          <button class="power-btn warning" onclick="App.powerAction('graceful_shutdown')" ${!this.connected ? 'disabled' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><line x1="7" y1="11" x2="7" y2="3"/></svg>
             <span class="power-btn-label">Graceful Shutdown</span>
           </button>
-          <button class="power-btn danger" onclick="App.powerAction('power_off')">
+          <button class="power-btn danger" onclick="App.powerAction('power_off')" ${!this.connected ? 'disabled' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/></svg>
             <span class="power-btn-label">Force Off</span>
           </button>
-          <button class="power-btn" onclick="App.powerAction('power_cycle')">
+          <button class="power-btn" onclick="App.powerAction('power_cycle')" ${!this.connected ? 'disabled' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             <span class="power-btn-label">Power Cycle</span>
           </button>
-          <button class="power-btn warning" onclick="App.powerAction('hard_reset')">
+          <button class="power-btn warning" onclick="App.powerAction('hard_reset')" ${!this.connected ? 'disabled' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
             <span class="power-btn-label">Hard Reset</span>
           </button>
         </div>
       </div>
+      ${isRedfish ? `
       <div class="card">
         <div class="card-header">
           <div class="card-title">Boot Override</div>
@@ -261,10 +279,34 @@ const App = {
           <button class="btn btn-outline" onclick="App.setBoot('Cd', true)">Boot from CD (Persistent)</button>
         </div>
       </div>
+      ` : ''}
     `;
+
+    if (this.connected) {
+      this.loadPowerState();
+    }
+  },
+
+  async loadPowerState() {
+    try {
+      const data = await invoke('get_dashboard');
+      const badge = document.getElementById('power-state-badge');
+      if (badge && data.power_state) {
+        const ps = data.power_state.toLowerCase();
+        badge.textContent = data.power_state;
+        badge.className = `badge badge-${ps === 'on' ? 'success' : ps === 'off' ? 'danger' : 'warning'}`;
+      }
+    } catch (e) {
+      const badge = document.getElementById('power-state-badge');
+      if (badge) badge.textContent = 'Unknown';
+    }
   },
 
   async powerAction(action) {
+    if (!this.connected) {
+      this.toast('Not connected to BMC', 'warning');
+      return;
+    }
     try {
       await invoke(action);
       this.toast(`Power command sent: ${action.replace(/_/g, ' ')}`, 'success');
@@ -274,6 +316,10 @@ const App = {
   },
 
   async setBoot(target, persistent) {
+    if (!this.connected) {
+      this.toast('Not connected to BMC', 'warning');
+      return;
+    }
     try {
       await invoke('set_boot_device', { target, persistent });
       this.toast(`Boot device set to ${target}`, 'success');
@@ -330,13 +376,21 @@ const App = {
   },
 
   async loadSensors() {
+    if (!this.connected) {
+      const grid = document.getElementById('sensor-grid');
+      if (grid) {
+        grid.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Not connected</div><div class="empty-state-text">Connect to a BMC to view sensor readings</div></div>';
+      }
+      return;
+    }
+
     try {
       const sensors = await invoke('get_sensors');
       const grid = document.getElementById('sensor-grid');
       if (!grid) return;
 
       if (!sensors.length) {
-        grid.innerHTML = '<div class="empty-state"><div class="empty-state-title">No sensor data</div><div class="empty-state-text">Connect to a BMC to view sensor readings</div></div>';
+        grid.innerHTML = '<div class="empty-state"><div class="empty-state-title">No sensor data</div><div class="empty-state-text">No sensors found on this system</div></div>';
         return;
       }
 
@@ -356,7 +410,10 @@ const App = {
         `;
       }).join('');
     } catch (e) {
-      this.toast('Failed to load sensors: ' + e, 'error');
+      const grid = document.getElementById('sensor-grid');
+      if (grid) {
+        grid.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Sensor data unavailable</div><div class="empty-state-text">${e}</div></div>`;
+      }
     }
   },
 
@@ -441,11 +498,13 @@ const App = {
   },
 
   renderVirtualMedia(body, actions) {
+    const isRedfish = this.connected && (this.protocolMode === 'Auto' || this.protocolMode === 'Redfish Only');
     body.innerHTML = `
       <div class="card">
         <div class="card-header">
           <div class="card-title">Virtual Media Mount</div>
         </div>
+        ${!isRedfish ? '<div class="empty-state" style="padding: 24px;"><div class="empty-state-title">Redfish required</div><div class="empty-state-text">Virtual Media requires a Redfish connection</div></div>' : `
         <div class="form-group">
           <label class="form-label">Slot</label>
           <select class="form-input" id="vm-slot">
@@ -463,12 +522,13 @@ const App = {
           <button class="btn btn-danger" onclick="App.unmountMedia()">Unmount</button>
           <button class="btn btn-secondary" onclick="App.refreshMedia()">Refresh Status</button>
         </div>
+        `}
       </div>
       <div class="card">
         <div class="card-header">
           <div class="card-title">Current Status</div>
         </div>
-        <div id="vm-status"><div class="empty-state"><div class="empty-state-text">Click Refresh to check status</div></div></div>
+        <div id="vm-status"><div class="empty-state"><div class="empty-state-text">${isRedfish ? 'Click Refresh to check status' : 'Connect via Redfish to use Virtual Media'}</div></div></div>
       </div>
     `;
   },
@@ -529,13 +589,14 @@ const App = {
   },
 
   renderSEL(body, actions) {
+    const isRedfish = this.connected && (this.protocolMode === 'Auto' || this.protocolMode === 'Redfish Only');
     actions.innerHTML = `
-      <button class="btn btn-secondary btn-sm" onclick="App.loadSEL()">
+      <button class="btn btn-secondary btn-sm" onclick="App.loadSEL()" ${!this.connected ? 'disabled' : ''}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         Refresh
       </button>
-      <button class="btn btn-secondary btn-sm" onclick="App.exportSEL()">Export CSV</button>
-      <button class="btn btn-danger btn-sm" onclick="App.confirmClearSEL()">Clear Log</button>
+      <button class="btn btn-secondary btn-sm" onclick="App.exportSEL()" ${!this.connected ? 'disabled' : ''}>Export CSV</button>
+      ${isRedfish ? `<button class="btn btn-danger btn-sm" onclick="App.confirmClearSEL()">Clear Log</button>` : ''}
     `;
 
     body.innerHTML = `
@@ -558,15 +619,24 @@ const App = {
   selData: [],
 
   async loadSEL() {
+    if (!this.connected) {
+      this.showNotConnected('sel-entries');
+      return;
+    }
+
     try {
       this.selData = await invoke('get_sel_entries');
       this.filterSEL();
     } catch (e) {
-      this.toast('Failed to load SEL: ' + e, 'error');
+      const el = document.getElementById('sel-entries');
+      if (el) {
+        el.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Event log unavailable</div><div class="empty-state-text">${e}</div></div>`;
+      }
     }
   },
 
   filterSEL() {
+    if (!this.connected || !this.selData) return;
     const filter = document.getElementById('sel-filter')?.value || 'all';
     const entries = filter === 'all' ? this.selData : this.selData.filter(e => e.severity === filter);
     const el = document.getElementById('sel-entries');
@@ -632,10 +702,23 @@ const App = {
   },
 
   async loadFRU() {
+    if (!this.connected) {
+      const el = document.getElementById('fru-content');
+      if (el) {
+        el.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Not connected</div><div class="empty-state-text">Connect to a BMC to view hardware information</div></div>';
+      }
+      return;
+    }
+
     try {
       const fru = await invoke('get_fru_info');
       const el = document.getElementById('fru-content');
       if (!el) return;
+
+      if (!fru.board && !fru.product && !fru.chassis) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-state-title">No FRU data</div><div class="empty-state-text">No field-replaceable unit information found</div></div>';
+        return;
+      }
 
       el.innerHTML = `
         <div class="fru-grid">
@@ -668,7 +751,10 @@ const App = {
         </div>
       `;
     } catch (e) {
-      this.toast('Failed to load FRU: ' + e, 'error');
+      const el = document.getElementById('fru-content');
+      if (el) {
+        el.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Hardware info unavailable</div><div class="empty-state-text">${e}</div></div>`;
+      }
     }
   },
 
@@ -717,12 +803,27 @@ const App = {
             <span>Save credentials to system keychain</span>
           </label>
         </div>
+        <div class="form-group">
+          <label class="form-check">
+            <input type="checkbox" id="set-auto-connect" checked />
+            <span>Auto-connect on launch</span>
+          </label>
+        </div>
         <div style="display: flex; gap: 8px; margin-top: 16px;">
-          <button class="btn btn-primary" onclick="App.doConnect()">Connect</button>
-          <button class="btn btn-danger" onclick="App.doDisconnect()">Disconnect</button>
+          <button class="btn btn-primary" id="connect-btn" onclick="App.doConnect()">Connect</button>
+          <button class="btn btn-danger" onclick="App.doDisconnect()" ${!this.connected ? 'disabled' : ''}>Disconnect</button>
           <button class="btn btn-outline" onclick="App.doDeleteSavedCredentials()">Clear Saved</button>
+          ${this.connected ? '<button class="btn btn-secondary" onclick="App.runRedfishDiagnostics()">Test Redfish</button>' : ''}
         </div>
       </div>
+      ${this.connected ? `
+      <div class="card" id="redfish-diagnostics" style="display:none;">
+        <div class="card-header">
+          <div class="card-title">Redfish Diagnostics</div>
+        </div>
+        <div id="redfish-diag-results"><div class="spinner"></div></div>
+      </div>
+      ` : ''}
       <div class="card">
         <div class="card-header">
           <div class="card-title">Appearance</div>
@@ -735,7 +836,6 @@ const App = {
         </div>
       </div>
     `;
-    this.toast('Settings page loaded', 'info');
     this.loadSavedCredentials();
   },
 
@@ -750,12 +850,17 @@ const App = {
         const setPassword = document.getElementById('set-password');
         const setProtocol = document.getElementById('set-protocol');
         const setSkipTls = document.getElementById('set-skip-tls');
+        const setAutoConnect = document.getElementById('set-auto-connect');
         if (setHost) setHost.value = creds.host || '';
         if (setPort) setPort.value = creds.port || 443;
         if (setUsername) setUsername.value = creds.username || '';
         if (setProtocol) setProtocol.value = creds.protocol_mode || 'Auto';
         if (setSkipTls) setSkipTls.checked = creds.skip_tls_verify || false;
         if (setPassword && password) setPassword.value = password;
+        if (setAutoConnect) {
+          const ac = localStorage.getItem('auto_connect');
+          setAutoConnect.checked = ac !== 'false';
+        }
       }
     } catch (e) {
       console.warn('Failed to load saved credentials:', e);
@@ -768,8 +873,11 @@ const App = {
     const username = document.getElementById('set-username')?.value;
     const password = document.getElementById('set-password')?.value;
     const protocol_mode = document.getElementById('set-protocol')?.value || 'Auto';
-    const skip_tls_verify = document.getElementById('set-skip-tls')?.checked || false;
+    const skip_tls_verify = document.getElementById('set-skip-tls')?.checked ?? true;
     const save_credentials = document.getElementById('set-save-creds')?.checked || false;
+    const auto_connect = document.getElementById('set-auto-connect')?.checked || false;
+
+    localStorage.setItem('auto_connect', auto_connect ? 'true' : 'false');
 
     if (!host || !username) {
       this.toast('Host and username are required', 'warning');
@@ -777,12 +885,19 @@ const App = {
     }
 
     try {
+      const btn = document.getElementById('connect-btn');
+      if (btn) { btn.textContent = 'Connecting...'; btn.disabled = true; }
       await invoke('connect', { params: { host, port, username, password: password || '', protocol_mode, skip_tls_verify, save_credentials } });
       this.connected = true;
+      this.protocolMode = protocol_mode;
       this.updateConnectionStatus(true);
       this.toast('Connected to BMC', 'success');
+      if (this.currentPage === 'dashboard') this.loadDashboard();
     } catch (e) {
       this.toast('Connection failed: ' + e, 'error');
+    } finally {
+      const btn = document.getElementById('connect-btn');
+      if (btn) { btn.textContent = 'Connect'; btn.disabled = false; }
     }
   },
 
@@ -790,8 +905,10 @@ const App = {
     try {
       await invoke('disconnect');
       this.connected = false;
+      this.protocolMode = 'Auto';
       this.updateConnectionStatus(false);
       this.toast('Disconnected', 'success');
+      if (this.currentPage === 'dashboard') this.loadDashboard();
     } catch (e) {
       this.toast('Disconnect failed: ' + e, 'error');
     }
@@ -813,7 +930,11 @@ const App = {
       dot.classList.toggle('connected', connected);
     }
     if (text) {
-      text.textContent = connected ? 'Connected' : 'Disconnected';
+      if (connected) {
+        text.textContent = `Connected (${this.protocolMode})`;
+      } else {
+        text.textContent = 'Disconnected';
+      }
     }
   },
 
@@ -854,12 +975,83 @@ const App = {
     });
   },
 
+  showNotConnected(containerId) {
+    const el = document.getElementById(containerId);
+    if (el) {
+      el.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="2" x2="22" y2="22"/></svg><div class="empty-state-title">Not connected</div><div class="empty-state-text">Connect to a BMC to view data</div></div>';
+    }
+  },
+
+  showRedfishRequired(containerId) {
+    const el = document.getElementById(containerId);
+    if (el) {
+      el.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><div class="empty-state-title">Redfish required</div><div class="empty-state-text">This feature requires a Redfish connection</div></div>';
+    }
+  },
+
   healthBadge(health) {
     if (!health) return 'info';
     const h = health.toLowerCase();
     if (h === 'critical') return 'danger';
     if (h === 'warning') return 'warning';
     return 'success';
+  },
+
+  async runRedfishDiagnostics() {
+    const panel = document.getElementById('redfish-diagnostics');
+    const results = document.getElementById('redfish-diag-results');
+    if (panel) panel.style.display = 'block';
+    if (results) results.innerHTML = '<div class="spinner"></div>';
+
+    try {
+      const data = await invoke('test_redfish');
+      if (results) {
+        results.innerHTML = `<div class="table-container"><table><thead><tr><th>Endpoint</th><th>Result</th></tr></thead><tbody>
+          ${Object.entries(data).map(([k, v]) => `<tr><td><code>${k}</code></td><td><code>${v}</code></td></tr>`).join('')}
+        </tbody></table></div>`;
+      }
+    } catch (e) {
+      if (results) {
+        results.innerHTML = `<div class="empty-state"><div class="empty-state-title">Diagnostics failed</div><div class="empty-state-text">${e}</div></div>`;
+      }
+    }
+  },
+
+  async autoConnect() {
+    try {
+      const result = await invoke('load_credentials');
+      if (!result) return false;
+      const [creds, password] = result;
+      if (!creds || !creds.host || !password) return false;
+
+      const autoConnectEnabled = localStorage.getItem('auto_connect');
+      if (autoConnectEnabled === 'false') return false;
+
+      console.log('[IDM] Auto-connecting to', creds.host);
+      this.toast('Auto-connecting to ' + creds.host + '...', 'info');
+
+      await invoke('connect', {
+        params: {
+          host: creds.host,
+          port: creds.port || 443,
+          username: creds.username,
+          password: password,
+          protocol_mode: creds.protocol_mode || 'Auto',
+          skip_tls_verify: creds.skip_tls_verify ?? true,
+          save_credentials: false,
+        }
+      });
+
+      this.connected = true;
+      this.protocolMode = creds.protocol_mode || 'Auto';
+      this.updateConnectionStatus(true);
+      this.toast('Auto-connected to ' + creds.host, 'success');
+      if (this.currentPage === 'dashboard') this.loadDashboard();
+      return true;
+    } catch (e) {
+      console.warn('[IDM] Auto-connect failed:', e);
+      return false;
+    }
   },
 
   bindKeyboardShortcuts() {
